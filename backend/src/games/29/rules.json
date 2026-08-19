@@ -1,0 +1,63 @@
+{
+  "displayName": "Twenty-Nine",
+  "version": "2.0.0",
+  "players": {
+    "min": 4,
+    "max": 4,
+    "defaultCount": 4,
+    "topology": "fixed-pairs",
+    "teamsByCount": {
+      "4": [[0, 2], [1, 3]]
+    }
+  },
+  "deck": {
+    "suits": ["S", "H", "D", "C"],
+    "ranks": ["7", "8", "Q", "K", "T", "A", "9", "J"],
+    "deal": { "mode": "fixed", "handSize": 8, "kittySize": 0, "biddingHandSize": 4 },
+    "rankOrder": ["7", "8", "Q", "K", "T", "A", "9", "J"],
+    "pointValues": { "J": 3, "9": 2, "A": 1, "T": 1, "K": 0, "Q": 0, "8": 0, "7": 0 }
+  },
+  "trump": {
+    "mode": "hidden",
+    "hidden": { "allowConcealedLead": true }
+  },
+  "bidding": {
+    "enabled": true,
+    "minBid": 16,
+    "maxBid": 28,
+    "allowPass": true,
+    "determines": ["trump-suit"],
+    "style": "auction",
+    "dealerMustBid": true,
+    "holdBidBySeniority": true
+  },
+  "phases": [
+    { "name": "DEALING", "kind": "DEALING", "next": "BIDDING" },
+    { "name": "BIDDING", "kind": "BIDDING", "next": "TRUMP_SELECTION" },
+    { "name": "TRUMP_SELECTION", "kind": "TRUMP_SELECTION", "next": "PLAYING" },
+    { "name": "PLAYING", "kind": "PLAYING", "next": "SCORING" },
+    { "name": "SCORING", "kind": "SCORING", "next": null }
+  ],
+  "trickRules": {
+    "mustFollowSuit": true,
+    "mustTrumpIfVoid": false,
+    "freeDiscardIfVoidAndNoTrump": true,
+    "mustOvertrumpIfPossible": false,
+    "mustTrumpAfterOwnReveal": true
+  },
+  "compoundActions": [
+    {
+      "id": "reveal-and-play",
+      "triggerPhase": "PLAYING",
+      "actionSequence": ["REVEAL_TRUMP", "PLAY_CARD"],
+      "conditions": [{ "kind": "hand-is-void-in-lead-suit" }],
+      "atomic": false
+    }
+  ],
+  "scoring": {
+    "contractBasis": "points",
+    "formula": { "kind": "declarer-contract", "stake": 1, "defenders": "unaffected" },
+    "maxHands": 20,
+    "targetScore": 6
+  }
+}

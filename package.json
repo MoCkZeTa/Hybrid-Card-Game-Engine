@@ -1,0 +1,23 @@
+{
+  "name": "hybrid-card-game",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Universal Hybrid AI Card Game Engine — plugin-driven trick-taking engine with LLM decision layer",
+  "type": "module",
+  "workspaces": [
+    "shared",
+    "backend",
+    "frontend"
+  ],
+  "engines": {
+    "node": ">=20.11.0"
+  },
+  "scripts": {
+    "build:shared": "npm run build --workspace shared",
+    "dev:backend": "npm run dev --workspace backend",
+    "dev:frontend": "npm run dev --workspace frontend",
+    "build": "npm run build --workspace shared && npm run build --workspace backend && npm run build --workspace frontend",
+    "test": "npm run test --workspace backend",
+    "typecheck": "npm run typecheck --workspaces --if-present"
+  }
+}

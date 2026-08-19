@@ -1,0 +1,46 @@
+{
+  "displayName": "Oh Hell",
+  "version": "1.0.0",
+  "players": {
+    "min": 3,
+    "max": 7,
+    "defaultCount": 4,
+    "topology": "solo"
+  },
+  "deck": {
+    "suits": ["S", "H", "D", "C"],
+    "ranks": ["2", "3", "4", "5", "6", "7", "8", "9", "T", "J", "Q", "K", "A"],
+    "deal": { "mode": "schedule", "handSizes": [7, 6, 5, 4, 3, 2, 1, 2, 3, 4, 5, 6, 7] },
+    "rankOrder": ["2", "3", "4", "5", "6", "7", "8", "9", "T", "J", "Q", "K", "A"],
+    "pointValues": {}
+  },
+  "trump": {
+    "mode": "kitty-turnup"
+  },
+  "bidding": {
+    "enabled": true,
+    "minBid": 0,
+    "maxBid": 7,
+    "allowPass": false,
+    "determines": ["trick-quota"],
+    "style": "single-round",
+    "forbidExactTotal": true
+  },
+  "phases": [
+    { "name": "DEALING", "kind": "DEALING", "next": "BIDDING" },
+    { "name": "BIDDING", "kind": "BIDDING", "next": "PLAYING" },
+    { "name": "PLAYING", "kind": "PLAYING", "next": "SCORING" },
+    { "name": "SCORING", "kind": "SCORING", "next": null }
+  ],
+  "trickRules": {
+    "mustFollowSuit": true,
+    "mustTrumpIfVoid": false,
+    "freeDiscardIfVoidAndNoTrump": true,
+    "mustOvertrumpIfPossible": false
+  },
+  "scoring": {
+    "contractBasis": "tricks",
+    "formula": { "kind": "exact-bid", "base": 10, "perTrick": 1, "missPerTrick": 0 },
+    "maxHands": 13
+  }
+}

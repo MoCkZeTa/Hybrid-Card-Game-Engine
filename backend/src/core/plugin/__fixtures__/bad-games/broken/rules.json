@@ -1,0 +1,17 @@
+﻿{
+  "displayName": "Broken Game",
+  "version": "1.0.0",
+  "players": { "count": 4, "topology": "solo" },
+  "deck": {
+    "suits": ["S", "H", "D", "C"],
+    "ranks": ["2", "3"],
+    "handSize": 8,
+    "kittySize": 0,
+    "rankOrder": ["2", "3"],
+    "pointValues": {}
+  },
+  "trump": { "mode": "static" },
+  "phases": [{ "name": "PLAYING", "kind": "PLAYING", "next": null }],
+  "trickRules": { "mustFollowSuit": true, "mustTrumpIfVoid": false, "freeDiscardIfVoidAndNoTrump": true, "mustOvertrumpIfPossible": false },
+  "scoring": { "contractBasis": "tricks" }
+}

@@ -1,0 +1,2 @@
+$procId = Get-NetTCPConnection -LocalPort 3001 | Select-Object -ExpandProperty OwningProcess -Unique
+Stop-Process -Id $procId -Force

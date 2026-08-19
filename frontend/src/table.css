@@ -1,0 +1,949 @@
+/* ==========================================================================
+   The table itself — flat felt, seats, the viewer's own area — plus the room
+   screen and plugin import. Loaded after styles.css, which defines every
+   colour token used here. No gradients, no glow/pulse, no emoji icons.
+   ========================================================================== */
+
+/* ---------- Play column -------------------------------------------------- */
+
+/* Direct children of the locked-height play screen never grow or shrink —
+   only .casino does — so the hand and its controls hold the bottom of the
+   viewport no matter how tall the window is. */
+.app-play .app-bar,
+.app-play .scoreboard,
+.app-play .my-area,
+.app-play .room-match-id,
+.app-play .room-footer-note {
+  flex: none;
+}
+
+.app-play .app-bar {
+  margin-bottom: 0.75rem;
+}
+
+.app-play .room-match-id {
+  margin-bottom: 0.75rem;
+}
+
+.app-play .room-footer-note {
+  margin-top: 0.75rem;
+  margin-bottom: 0;
+}
+
+/* ---------- App bar chips ------------------------------------------------ */
+
+.app-bar-chips {
+  display: flex;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  background: var(--panel-2);
+  border: 2px solid var(--border);
+  border-radius: 999px;
+  padding: 0.26rem 0.75rem;
+  font-size: 0.8rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.chip-label {
+  color: var(--text-faint);
+  font-weight: 700;
+  font-size: 0.64rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+/* ---------- Seats -------------------------------------------------------- */
+
+/* Placed on a ring across the felt by seatPosition(). Laid out sideways —
+   cards left, name and stats right — because a ring has far more width to
+   spare than height, and the tall stacked plates this replaced were what the
+   trick kept colliding with. */
+.seat {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.32rem 0.5rem;
+  background: rgba(13, 14, 16, 0.88);
+  border: 2px solid rgba(255, 255, 255, 0.15);
+  border-radius: var(--radius-sm);
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.seat-turn {
+  border-color: var(--accent);
+  background: rgba(13, 14, 16, 0.95);
+}
+
+.seat-body {
+  min-width: 92px;
+}
+
+.seat-name {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.8rem;
+  font-weight: 800;
+  color: #fff;
+  white-space: nowrap;
+}
+
+.seat-self {
+  border-color: rgba(255, 255, 255, 0.34);
+}
+
+/* ---------- The play surface --------------------------------------------- */
+
+/* Takes all the height left over, and it is the only thing that gives any up
+   when the window is short. */
+.table-surface {
+  position: relative;
+  flex: 1;
+  min-height: 128px;
+  margin-bottom: 0.75rem;
+  display: grid;
+  place-items: center;
+  border-radius: var(--radius-lg);
+  border: 2px solid var(--border);
+  overflow: hidden;
+
+  /* Felt, done properly: a fine woven cross-hatch, a soft centre light and a
+     darkened rim, over one flat green. Reads as baize rather than as a
+     rectangle of solid colour. */
+  background-color: var(--felt);
+  background-image:
+    radial-gradient(115% 85% at 50% 38%, rgba(255, 255, 255, 0.07), transparent 62%),
+    repeating-linear-gradient(45deg, rgba(255, 255, 255, 0.022) 0 1px, transparent 1px 5px),
+    repeating-linear-gradient(-45deg, rgba(0, 0, 0, 0.05) 0 1px, transparent 1px 5px);
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.07),
+    inset 0 0 70px rgba(0, 0, 0, 0.4);
+}
+
+.surface-mark {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  font-size: clamp(4rem, 16vh, 8rem);
+  line-height: 1;
+  color: rgba(255, 255, 255, 0.045);
+  pointer-events: none;
+  user-select: none;
+}
+
+.trick-placeholder {
+  position: relative;
+  color: rgba(255, 255, 255, 0.42);
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.trick-cards {
+  position: relative;
+  display: flex;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+.trick-card {
+  position: relative;
+  --deal-dx: 0;
+  --deal-dy: -1;
+  --i: 0;
+  animation: dealIn 0.32s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes dealIn {
+  from {
+    opacity: 0;
+    transform: translate(calc(var(--deal-dx) * 90px), calc(var(--deal-dy) * 90px)) scale(0.8);
+  }
+}
+
+/* Who played it, as a chip on the card itself. Out of flow, so the trick costs
+   the felt exactly one card's height and can't push into the nameplates. */
+.trick-card-seat {
+  position: absolute;
+  left: 50%;
+  bottom: -0.35rem;
+  transform: translateX(-50%);
+  max-width: 84px;
+  padding: 0.05rem 0.35rem;
+  border-radius: 3px;
+  background: rgba(9, 10, 11, 0.82);
+  font-size: 0.6rem;
+  font-weight: 800;
+  color: rgba(255, 255, 255, 0.85);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The card that took the trick: ringed, lifted above the others, and the one
+   the whole pile then follows off the table. */
+.trick-card-won {
+  z-index: 2;
+}
+
+.trick-card-won .card {
+  box-shadow: 0 0 0 2px var(--accent), var(--hard-shadow-sm);
+}
+
+.trick-card-won .trick-card-seat {
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
+/* Trick resolution: hold a beat so the winning card registers, then drag the
+   whole pile onto the seat that took it. --sweep-x/y is the real measured
+   offset to that seat's tile, so the cards land on it rather than in its
+   general direction. */
+.trick-cards-sweeping .trick-card {
+  animation: trickToWinner 0.62s cubic-bezier(0.5, 0, 0.75, 0.35) forwards;
+  animation-delay: calc(0.95s + var(--i) * 0.035s);
+}
+
+@keyframes trickToWinner {
+  25% {
+    transform: translate(calc(var(--sweep-x) * 0.04), calc(var(--sweep-y) * 0.04)) scale(1.04);
+    opacity: 1;
+  }
+  to {
+    transform: translate(var(--sweep-x), var(--sweep-y)) scale(0.34);
+    opacity: 0;
+  }
+}
+
+/* No winner could be derived (a points-scored game, or the first state after a
+   reconnect) — fall back to the old fade so the trick still clears visibly. */
+.trick-cards-resolving:not(.trick-cards-sweeping) .trick-card {
+  animation: trickSweep 0.3s ease-in forwards;
+  animation-delay: 1.2s;
+}
+
+@keyframes trickSweep {
+  to {
+    opacity: 0;
+    transform: translateY(10px) scale(0.92);
+  }
+}
+
+/* The taking seat acknowledges the trick as the cards land on it. */
+.seat-took {
+  animation: seatTook 0.8s ease-out;
+  animation-delay: 1.2s;
+}
+
+@keyframes seatTook {
+  25%,
+  65% {
+    border-color: var(--accent);
+    background: var(--accent-soft);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .trick-card,
+  .trick-cards-sweeping .trick-card,
+  .seat-took {
+    animation: none;
+  }
+
+  .trick-cards-resolving .trick-card {
+    animation: trickSweep 0.2s ease-in forwards;
+    animation-delay: 1.3s;
+  }
+}
+
+/* ---------- Seat internals ------------------------------------------------ */
+
+.fan {
+  flex: none;
+  display: flex;
+  align-items: center;
+}
+
+.fan-card {
+  filter: drop-shadow(0 2px 3px rgba(0, 0, 0, 0.4));
+}
+
+.plate-ai,
+.plate-you {
+  font-size: 0.56rem;
+  font-weight: 800;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  padding: 0.08rem 0.3rem;
+  border-radius: 3px;
+}
+
+.plate-ai {
+  background: rgba(255, 255, 255, 0.16);
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.plate-you {
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
+/* Three micro-stats — number over a spelled-out label, split by hairlines.
+   The old "W 0 B 3 C 13" needed a legend to read. */
+.plate-stats {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  margin-top: 0.24rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.13);
+  padding-top: 0.22rem;
+}
+
+.stat {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.05rem;
+  line-height: 1;
+}
+
+.stat + .stat {
+  border-left: 1px solid rgba(255, 255, 255, 0.13);
+}
+
+.stat-value {
+  font-size: 0.8rem;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  color: rgba(255, 255, 255, 0.92);
+}
+
+.stat-label {
+  font-size: 0.5rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.45);
+}
+
+.stat-live .stat-value {
+  color: var(--accent);
+}
+
+/* ---------- Scoreboard --------------------------------------------------- */
+
+.scoreboard {
+  flex: none;
+  display: flex;
+  align-items: stretch;
+  flex-wrap: wrap;
+  background: var(--panel);
+  border: 2px solid var(--border);
+  border-radius: var(--radius);
+  margin-bottom: 0.75rem;
+  overflow: hidden;
+}
+
+.score-chip {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: 0.45rem;
+  padding: 0.55rem 1rem;
+  font-size: 0.85rem;
+  border-right: 2px solid var(--border-soft);
+}
+
+.score-key {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-faint);
+  font-size: 0.7rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.score-value {
+  font-weight: 800;
+  font-size: 1.05rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.score-live {
+  font-weight: 700;
+  font-size: 0.78rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--accent);
+}
+
+.match-id {
+  flex: none;
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.78rem;
+  color: var(--text-faint);
+  background: none;
+  border: none;
+  padding: 0.55rem 1rem;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.match-id:hover {
+  color: var(--text-dim);
+  background: var(--panel-2);
+}
+
+.match-id code {
+  color: var(--text-dim);
+}
+
+/* ---------- The viewer's own area ---------------------------------------- */
+
+.my-area {
+  flex: none;
+  background: var(--panel);
+  border: 2px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.9rem 1.15rem 1.05rem;
+}
+
+.my-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.my-head-label {
+  font-size: 0.7rem;
+  font-weight: 800;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.turn-pill {
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  padding: 0.35rem 0.9rem;
+  border-radius: 999px;
+  background: var(--panel-2);
+  border: 2px solid var(--border);
+  color: var(--text-faint);
+}
+
+.turn-pill-active {
+  background: var(--accent);
+  border-color: var(--accent-ink);
+  color: var(--accent-ink);
+}
+
+/* A real fanned hand: cards overlap only as much as they must to stay on one
+   row. The gap between them is the leftover width shared out, clamped so a
+   short hand doesn't sprawl and a 13-card hand doesn't wrap. Each card's rank
+   and suit live in its top-left corner, which the overlap never covers, and
+   hovering raises the whole card above its neighbours. */
+.my-hand {
+  --card-w: 58px;
+  display: flex;
+  flex-wrap: nowrap;
+  justify-content: center;
+  align-items: flex-end;
+  min-height: 94px;
+  padding-top: 0.45rem;
+}
+
+.my-hand .card + .card {
+  margin-left: clamp(
+    -30px,
+    calc((100% - var(--hand-n, 1) * var(--card-w)) / max(var(--hand-n, 1) - 1, 1)),
+    6px
+  );
+}
+
+.my-hand .card:hover {
+  z-index: 4;
+}
+
+.action-buttons {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  margin-top: 0.85rem;
+  padding-top: 0.85rem;
+  border-top: 2px solid var(--border-soft);
+}
+
+.banner {
+  flex: none;
+  display: block;
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  padding: 0.7rem 1rem;
+  border-radius: var(--radius);
+  margin-bottom: 0.75rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.banner-done {
+  background: var(--accent-soft);
+  border: 2px solid var(--accent-line);
+  color: var(--accent);
+}
+
+.banner-done:hover {
+  border-color: var(--accent);
+}
+
+/* ---------- Room (post-create, pre-table) -------------------------------- */
+
+.room-match-id {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  width: 100%;
+  text-align: center;
+  margin-bottom: 1.25rem;
+  padding: 0.75rem 1rem;
+  font-size: 0.95rem;
+  border: 2px dashed var(--border);
+  border-radius: var(--radius);
+}
+
+.room-match-id:hover {
+  border-color: var(--accent);
+  border-style: solid;
+}
+
+.room-match-id code {
+  color: var(--text);
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+/* The room lays its seats on the same ring as the table, so nothing appears to
+   move when the match starts — only the Start block in the middle changes. */
+.room-seats {
+  display: contents;
+}
+
+.room-center {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.7rem;
+  max-width: 340px;
+  text-align: center;
+}
+
+.room-center-title {
+  font-size: 1.2rem;
+  font-weight: 800;
+  color: #fff;
+}
+
+.room-center-hint {
+  font-size: 0.8rem;
+  color: rgba(255, 255, 255, 0.68);
+  text-align: center;
+}
+
+.room-bot-level-picker {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.4rem;
+}
+
+/* Deliberately quieter than .room-center-hint — a caveat, not a headline. */
+.room-center-note {
+  font-size: 0.7rem;
+  color: rgba(255, 255, 255, 0.45);
+  text-align: center;
+}
+
+.room-plate {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  z-index: 2;
+  font: inherit;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.22rem;
+  background: rgba(13, 14, 16, 0.9);
+  border: 2px solid rgba(255, 255, 255, 0.15);
+  border-radius: var(--radius-sm);
+  padding: 0.45rem 0.9rem;
+  min-width: 124px;
+  cursor: not-allowed;
+  transition: border-color 0.12s, background 0.12s;
+}
+
+.room-plate-open {
+  cursor: pointer;
+  border-style: dashed;
+  border-color: rgba(255, 255, 255, 0.34);
+}
+
+.room-plate-open:hover {
+  border-color: var(--accent);
+  border-style: solid;
+  background: rgba(13, 14, 16, 0.98);
+}
+
+.room-plate-you {
+  border-color: var(--accent);
+  border-style: solid;
+  cursor: default;
+}
+
+.room-plate-seat {
+  font-size: 0.62rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  color: rgba(255, 255, 255, 0.5);
+}
+
+.room-plate-name {
+  font-size: 0.88rem;
+  font-weight: 800;
+  color: #fff;
+}
+
+.room-plate-open .room-plate-name {
+  color: rgba(255, 255, 255, 0.55);
+  font-weight: 500;
+  font-style: italic;
+}
+
+.room-plate-tag {
+  font-size: 0.56rem;
+  font-weight: 800;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  padding: 0.08rem 0.32rem;
+  border-radius: 3px;
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
+.room-footer-note {
+  margin-top: 1rem;
+  text-align: center;
+}
+
+/* ---------- Bid picker ---------------------------------------------------- */
+
+.bid-picker {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  margin-top: 0.6rem;
+  padding: 0.4rem 0.7rem;
+  border: 2px solid var(--accent-line);
+  border-radius: var(--radius);
+  background: var(--accent-soft);
+}
+
+.bid-picker-label {
+  font-size: 0.74rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.bid-picker .btn-primary {
+  margin-left: auto;
+}
+
+.bid-stepper {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  background: var(--panel-2);
+  border: 2px solid var(--border);
+  border-radius: 999px;
+  padding: 0.2rem;
+}
+
+.bid-stepper-btn {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  border: 2px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  font-size: 1rem;
+  font-weight: 800;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.bid-stepper-btn:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.bid-stepper-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.bid-stepper-value {
+  min-width: 2rem;
+  text-align: center;
+  font-size: 1.05rem;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+
+.bid-picker .btn {
+  padding: 0.45rem 1rem;
+}
+
+.bid-slider {
+  flex: 1 1 140px;
+  width: auto;
+  min-width: 120px;
+  max-width: 320px;
+  accent-color: var(--accent);
+}
+
+/* ---------- Plugin import ------------------------------------------------ */
+
+.import-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.9rem;
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  background: var(--panel);
+  border: 2px dashed var(--border);
+  border-radius: var(--radius);
+  padding: 1rem 1.2rem;
+}
+
+.import-toggle:hover {
+  border-color: var(--accent);
+  border-style: solid;
+}
+
+.import-toggle-icon {
+  font-size: 1.3rem;
+  color: var(--accent);
+  line-height: 1;
+  font-weight: 800;
+}
+
+.import-toggle strong {
+  display: block;
+  font-size: 0.95rem;
+}
+
+.import-toggle small {
+  color: var(--text-faint);
+  font-size: 0.8rem;
+}
+
+.import-panel {
+  gap: 1rem;
+}
+
+.import-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.import-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+}
+
+.import-grid textarea {
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  line-height: 1.5;
+  padding: 0.7rem;
+  border-radius: var(--radius-sm);
+  border: 2px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  resize: vertical;
+  width: 100%;
+}
+
+.import-grid textarea:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.import-grid input[type='file'] {
+  font-size: 0.8rem;
+  padding: 0.4rem;
+  margin-bottom: 0.4rem;
+}
+
+.import-error,
+.inline-error {
+  background: var(--danger-soft);
+  border: 2px solid var(--danger);
+  color: var(--danger);
+  padding: 0.7rem 0.9rem;
+  border-radius: var(--radius-sm);
+  font-size: 0.82rem;
+}
+
+.import-error {
+  white-space: pre-wrap;
+  margin: 0;
+  font-family: var(--font-mono);
+  max-height: 220px;
+  overflow: auto;
+}
+
+.inline-error {
+  font-size: 0.85rem;
+  margin-bottom: 0.9rem;
+}
+
+.import-success {
+  background: var(--success-soft);
+  border: 2px solid var(--success);
+  color: var(--success);
+  padding: 0.7rem 0.9rem;
+  border-radius: var(--radius-sm);
+  font-size: 0.85rem;
+}
+
+.import-notice {
+  background: var(--accent-soft);
+  border: 2px solid var(--accent-line);
+  color: var(--text);
+  padding: 0.7rem 0.9rem;
+  border-radius: var(--radius-sm);
+  font-size: 0.85rem;
+}
+
+.field-hint {
+  color: var(--text-faint);
+  font-size: 0.75rem;
+}
+
+.field-hint code {
+  background: var(--panel-3);
+  padding: 0.05rem 0.28rem;
+  border-radius: 3px;
+}
+
+/* ---------- Responsive --------------------------------------------------- */
+
+/* On a short window the surface is the only thing that can shrink, so keep the
+   ring's contents from being the reason it can't. */
+@media (max-height: 780px) and (min-width: 861px) {
+  .table-surface .card-md {
+    width: 46px;
+    height: 67px;
+  }
+
+  .table-surface .card-md .card-pip {
+    font-size: 0.62rem;
+  }
+
+  .table-surface .card-md .card-ace {
+    font-size: 1.5rem;
+  }
+
+  .seat .fan {
+    display: none;
+  }
+}
+
+@media (max-width: 860px) {
+  .import-grid {
+    grid-template-columns: 1fr;
+  }
+
+  /* A ring needs width the phone hasn't got — the seats' face-down fans go
+     first, then the tiles themselves tighten. */
+  .seat .fan {
+    display: none;
+  }
+
+  .seat {
+    padding: 0.28rem 0.4rem;
+  }
+
+  .seat-body {
+    min-width: 76px;
+  }
+
+  .seat-name {
+    font-size: 0.72rem;
+  }
+
+  .stat-value {
+    font-size: 0.72rem;
+  }
+
+  .stat-label {
+    font-size: 0.46rem;
+    letter-spacing: 0.05em;
+  }
+
+  .room-plate {
+    min-width: 96px;
+    padding: 0.4rem 0.6rem;
+  }
+
+  .my-hand {
+    --card-w: 50px;
+    min-height: 82px;
+  }
+
+  /* Equal-width chips squeeze the names out of existence on a phone — let
+     them size to their content and wrap instead. */
+  .score-chip {
+    flex: 0 1 auto;
+    justify-content: flex-start;
+  }
+
+  .bid-picker .btn-primary {
+    margin-left: 0;
+  }
+}

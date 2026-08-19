@@ -1,0 +1,40 @@
+{
+  "displayName": "3-2-5 (Teen Do Paanch)",
+  "version": "3.0.0",
+  "players": {
+    "min": 3,
+    "max": 3,
+    "defaultCount": 3,
+    "topology": "solo"
+  },
+  "deck": {
+    "suits": ["S", "H", "D", "C"],
+    "ranks": ["7", "8", "9", "T", "J", "Q", "K", "A"],
+    "excludedCards": ["7D", "7C"],
+    "deal": { "mode": "fixed", "handSize": 10, "kittySize": 0, "biddingHandSize": 5 },
+    "rankOrder": ["7", "8", "9", "T", "J", "Q", "K", "A"],
+    "pointValues": {}
+  },
+  "trump": {
+    "mode": "chooser",
+    "chooserDealerOffset": 2
+  },
+  "phases": [
+    { "name": "DEALING", "kind": "DEALING", "next": "TRUMP_SELECTION" },
+    { "name": "TRUMP_SELECTION", "kind": "TRUMP_SELECTION", "next": "PLAYING" },
+    { "name": "PLAYING", "kind": "PLAYING", "next": "SCORING" },
+    { "name": "SCORING", "kind": "SCORING", "next": null }
+  ],
+  "trickRules": {
+    "mustFollowSuit": true,
+    "mustTrumpIfVoid": false,
+    "freeDiscardIfVoidAndNoTrump": true,
+    "mustOvertrumpIfPossible": false
+  },
+  "scoring": {
+    "contractBasis": "tricks",
+    "fixedQuotasByDealerOffset": [2, 3, 5],
+    "formula": { "kind": "bid-difference" },
+    "maxHands": 6
+  }
+}

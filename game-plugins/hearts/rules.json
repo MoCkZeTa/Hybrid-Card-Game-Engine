@@ -1,0 +1,41 @@
+{
+  "displayName": "Hearts",
+  "version": "1.0.0",
+  "players": {
+    "min": 4,
+    "max": 4,
+    "defaultCount": 4,
+    "topology": "solo"
+  },
+  "deck": {
+    "suits": ["S", "H", "D", "C"],
+    "ranks": ["2", "3", "4", "5", "6", "7", "8", "9", "T", "J", "Q", "K", "A"],
+    "deal": { "mode": "even-split" },
+    "rankOrder": ["2", "3", "4", "5", "6", "7", "8", "9", "T", "J", "Q", "K", "A"],
+    "pointValues": {},
+    "suitPointValues": { "H": 1 },
+    "cardPointValues": { "QS": 13 }
+  },
+  "trump": {
+    "mode": "none"
+  },
+  "phases": [
+    { "name": "DEALING", "kind": "DEALING", "next": "PLAYING" },
+    { "name": "PLAYING", "kind": "PLAYING", "next": "SCORING" },
+    { "name": "SCORING", "kind": "SCORING", "next": null }
+  ],
+  "trickRules": {
+    "mustFollowSuit": true,
+    "mustTrumpIfVoid": false,
+    "freeDiscardIfVoidAndNoTrump": true,
+    "mustOvertrumpIfPossible": false,
+    "lockedLeadSuits": ["H"]
+  },
+  "scoring": {
+    "contractBasis": "points",
+    "formula": { "kind": "penalty-points" },
+    "lowerIsBetter": true,
+    "moonShot": { "mode": "others-take-penalty" },
+    "targetScore": 100
+  }
+}

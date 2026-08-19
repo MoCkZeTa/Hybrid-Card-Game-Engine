@@ -1,0 +1,1643 @@
+/* ==========================================================================
+   Hybrid Card Game — design system: "Ink & Felt"
+   Flat, graphic, confident. Near-black ink surfaces, one accent colour used
+   flatly (no gradients, no glow, no emoji-as-icon), hard offset shadows
+   instead of soft blur, bold condensed type for hierarchy. Dark-first, with
+   a paper-flat light mode. Every colour is a token so the two stay in sync.
+   ========================================================================== */
+
+:root {
+  /* Surfaces — neutral ink, not warm brown, not cool blue-black. */
+  --bg: #111214;
+  --bg-elev: #17181b;
+  --panel: #1c1d20;
+  --panel-2: #232428;
+  --panel-3: #2b2c30;
+  --border: #35363b;
+  --border-soft: #26272b;
+
+  /* Ink */
+  --text: #f3f2ef;
+  --text-dim: #aeafb4;
+  --text-faint: #77787d;
+
+  /* One accent, used flatly. */
+  --accent: #ff7a1a;
+  --accent-hover: #ff8f3d;
+  --accent-ink: #191008;
+  --accent-soft: rgba(255, 122, 26, 0.14);
+  --accent-line: rgba(255, 122, 26, 0.5);
+
+  --success: #35b473;
+  --success-soft: rgba(53, 180, 115, 0.14);
+  --warn: #e8a33d;
+  --danger: #e5484d;
+  --danger-soft: rgba(229, 72, 77, 0.14);
+
+  /* Felt — one flat green, no radial sheen. */
+  --felt: #124f36;
+  --felt-line: #0c3a27;
+  --rail: #17181b;
+
+  /* Card stock — flat cream. */
+  --card-face: #f6f3ec;
+  --card-ink: #17181b;
+  --card-red: #d1373d;
+  --card-edge: rgba(23, 24, 27, 0.16);
+
+  /* Suit ink, one colour per suit. Spades and clubs used to share the one
+     black, and at corner-pip size ♠ and ♣ collapse into the same dark blob —
+     so clubs get their own green, as on a four-colour deck. The green is also
+     a clear step lighter than the spade black, so the two still separate for
+     a colour-blind player reading luminance alone. Card stock is cream in
+     both themes, so these need no light/dark variants. */
+  --suit-spade: #17181b;
+  --suit-heart: #d1373d;
+  --suit-diamond: #d1373d;
+  --suit-club: #14683f;
+
+  --radius: 8px;
+  --radius-sm: 5px;
+  --radius-lg: 14px;
+
+  /* Hard, offset, unblurred — the signature shadow of this system. */
+  --hard-shadow: 3px 3px 0 rgba(0, 0, 0, 0.65);
+  --hard-shadow-sm: 2px 2px 0 rgba(0, 0, 0, 0.6);
+  --hard-shadow-lg: 5px 5px 0 rgba(0, 0, 0, 0.7);
+  --shadow-soft: 0 1px 2px rgba(0, 0, 0, 0.3);
+
+  --font-ui: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #efeee9;
+    --bg-elev: #f7f6f2;
+    --panel: #fbfaf7;
+    --panel-2: #f1f0ea;
+    --panel-3: #e6e4dc;
+    --border: #cac7ba;
+    --border-soft: #ddd9cc;
+
+    --text: #1a1a18;
+    --text-dim: #59584f;
+    --text-faint: #86847a;
+
+    --accent: #d9600a;
+    --accent-hover: #b74f07;
+    --accent-ink: #fffaf3;
+    --accent-soft: rgba(217, 96, 10, 0.1);
+    --accent-line: rgba(217, 96, 10, 0.5);
+
+    --success: #1f8f57;
+    --danger: #c8323a;
+
+    --card-face: #fffdf9;
+
+    --hard-shadow: 3px 3px 0 rgba(26, 26, 24, 0.18);
+    --hard-shadow-sm: 2px 2px 0 rgba(26, 26, 24, 0.16);
+    --hard-shadow-lg: 5px 5px 0 rgba(26, 26, 24, 0.2);
+    --shadow-soft: 0 1px 2px rgba(26, 26, 24, 0.1);
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+html {
+  background-color: var(--bg);
+}
+
+body {
+  margin: 0;
+  font-family: var(--font-ui);
+  color: var(--text);
+  -webkit-font-smoothing: antialiased;
+  min-height: 100%;
+  background-color: var(--bg);
+}
+
+h1,
+h2,
+h3 {
+  margin: 0;
+  line-height: 1.1;
+  font-family: var(--font-ui);
+  font-weight: 800;
+  letter-spacing: -0.01em;
+}
+
+code {
+  font-family: var(--font-mono);
+}
+
+.muted {
+  color: var(--text-faint);
+}
+
+.kicker {
+  display: block;
+  font-size: 0.7rem;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin-bottom: 0.3rem;
+}
+
+/* ---------- Buttons ------------------------------------------------------ */
+
+.btn {
+  font: inherit;
+  font-weight: 700;
+  padding: 0.6rem 1.15rem;
+  border-radius: var(--radius-sm);
+  border: 2px solid var(--border);
+  background: var(--panel-2);
+  color: var(--text);
+  cursor: pointer;
+  box-shadow: var(--hard-shadow-sm);
+  transition: transform 0.08s, box-shadow 0.08s, background 0.12s, border-color 0.12s;
+}
+
+.btn:hover:not(:disabled) {
+  border-color: var(--text-faint);
+  transform: translate(-1px, -1px);
+  box-shadow: 4px 4px 0 rgba(0, 0, 0, 0.65);
+}
+
+.btn:active:not(:disabled) {
+  transform: translate(1px, 1px);
+  box-shadow: 1px 1px 0 rgba(0, 0, 0, 0.65);
+}
+
+.btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+
+.btn-primary {
+  background: var(--accent);
+  border-color: var(--accent-ink);
+  color: var(--accent-ink);
+}
+
+.btn-primary:hover:not(:disabled) {
+  background: var(--accent-hover);
+  border-color: var(--accent-ink);
+}
+
+.btn-warn {
+  background: var(--warn);
+  border-color: #4a3411;
+  color: #1f1503;
+}
+
+.btn-danger {
+  background: var(--danger);
+  border-color: #430f11;
+  color: #fff5f4;
+}
+
+.btn-ghost {
+  background: transparent;
+  border-color: transparent;
+  color: var(--text-dim);
+  padding: 0.5rem 0.75rem;
+  box-shadow: none;
+}
+
+.btn-ghost:hover:not(:disabled) {
+  color: var(--text);
+  background: var(--panel-2);
+  border-color: transparent;
+  transform: none;
+  box-shadow: none;
+}
+
+.btn-block {
+  width: 100%;
+}
+
+.btn-lg {
+  padding: 0.85rem 2rem;
+  font-size: 1.05rem;
+}
+
+.btn-sm {
+  padding: 0.35rem 0.7rem;
+  font-size: 0.78rem;
+}
+
+.icon-btn {
+  width: 30px;
+  height: 30px;
+  border-radius: var(--radius-sm);
+  border: 2px solid var(--border);
+  background: var(--panel-2);
+  color: var(--text-faint);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 0.12s, border-color 0.12s;
+}
+
+.icon-btn:hover {
+  color: var(--text);
+  border-color: var(--text-faint);
+}
+
+.icon-btn-danger:hover {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
+.icon-btn svg {
+  width: 15px;
+  height: 15px;
+}
+
+input,
+select {
+  font: inherit;
+  padding: 0.6rem 0.75rem;
+  border-radius: var(--radius-sm);
+  border: 2px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  width: 100%;
+}
+
+input::placeholder {
+  color: var(--text-faint);
+}
+
+input:focus,
+select:focus,
+.btn:focus-visible,
+.card-clickable:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* ---------- Boot ----------------------------------------------------------*/
+
+.boot {
+  height: 100%;
+  display: grid;
+  place-items: center;
+}
+
+.boot-spinner {
+  width: 30px;
+  height: 30px;
+  border: 3px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ---------- Auth: split screen ------------------------------------------- */
+
+.auth-shell {
+  height: 100%;
+  min-height: 100vh;
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr);
+}
+
+.auth-hero {
+  background: var(--panel);
+  border-right: 2px solid var(--border);
+  padding: 3rem 3rem;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  position: relative;
+  overflow: hidden;
+}
+
+.auth-hero-suits {
+  display: flex;
+  gap: 0.6rem;
+  font-size: 2.4rem;
+  margin-bottom: 1.5rem;
+}
+
+.suit-s,
+.suit-c {
+  color: var(--text);
+}
+
+.suit-h,
+.suit-d {
+  color: var(--card-red);
+}
+
+.auth-hero h1 {
+  font-size: clamp(2.2rem, 5vw, 3.4rem);
+  max-width: 11ch;
+  margin-bottom: 1rem;
+}
+
+.auth-hero p {
+  color: var(--text-dim);
+  font-size: 1.02rem;
+  max-width: 38ch;
+  line-height: 1.5;
+  margin: 0;
+}
+
+.auth-hero-tag {
+  position: absolute;
+  right: -2rem;
+  bottom: -3rem;
+  font-size: 14rem;
+  line-height: 1;
+  color: var(--border-soft);
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+.auth-panel {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2rem;
+}
+
+.auth-form-wrap {
+  width: 100%;
+  max-width: 360px;
+}
+
+.auth-tabs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.3rem;
+  background: var(--bg-elev);
+  padding: 0.3rem;
+  border-radius: var(--radius-sm);
+  border: 2px solid var(--border);
+  margin-bottom: 1.75rem;
+}
+
+.auth-tab {
+  font: inherit;
+  font-weight: 700;
+  padding: 0.55rem;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+.auth-tab-active {
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
+.auth-form {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.auth-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.auth-form label span {
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.auth-error {
+  background: var(--danger-soft);
+  border: 2px solid var(--danger);
+  color: var(--danger);
+  padding: 0.6rem 0.8rem;
+  border-radius: var(--radius-sm);
+  font-size: 0.86rem;
+  font-weight: 600;
+}
+
+/* An expired session isn't the player's mistake — state it in accent, not in
+   the red reserved for things they got wrong. */
+.auth-notice {
+  background: var(--accent-soft);
+  border: 2px solid var(--accent-line);
+  color: var(--text);
+  padding: 0.6rem 0.8rem;
+  border-radius: var(--radius-sm);
+  font-size: 0.86rem;
+  font-weight: 600;
+  margin-bottom: 1rem;
+}
+
+@media (max-width: 860px) {
+  .auth-shell {
+    grid-template-columns: 1fr;
+  }
+
+  .auth-hero {
+    padding: 2.25rem 1.5rem 1.5rem;
+    border-right: none;
+    border-bottom: 2px solid var(--border);
+  }
+
+  .auth-hero-tag {
+    display: none;
+  }
+}
+
+/* ---------- App shell / app bar ------------------------------------------ */
+
+.app {
+  max-width: 1180px;
+  min-height: 100dvh;
+  margin: 0 auto;
+  padding: 1.25rem;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Room and table: the whole screen is the game. Locked to the viewport so the
+   hand, the bid control and the felt are all reachable without scrolling —
+   scrolling away from your cards to place a bid is not acceptable in a card
+   game. Everything inside flexes; only the felt gives up height. */
+.app-play {
+  height: 100dvh;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.app-play > .game {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.app-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.65rem 1rem;
+  background: var(--panel);
+  border: 2px solid var(--border);
+  border-radius: var(--radius);
+  margin-bottom: 1.25rem;
+}
+
+.app-bar-brand {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  font-size: 1.02rem;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+}
+
+.app-bar-logo {
+  font-size: 1.15rem;
+  color: var(--accent);
+}
+
+.app-bar-right {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.app-bar-user {
+  color: var(--text-dim);
+  font-size: 0.88rem;
+  font-weight: 700;
+}
+
+.conn-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.conn-on {
+  background: var(--success);
+}
+
+.conn-off {
+  background: var(--danger);
+}
+
+/* ---------- Toast -------------------------------------------------------- */
+
+.toast {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.75rem 1rem;
+  border-radius: var(--radius);
+  margin-bottom: 1rem;
+}
+
+.toast > div {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.toast strong {
+  font-size: 0.7rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  opacity: 0.9;
+}
+
+.toast-error {
+  background: var(--danger-soft);
+  border: 2px solid var(--danger);
+  color: var(--danger);
+}
+
+.toast-close {
+  background: transparent;
+  border: none;
+  color: inherit;
+  font-size: 1.3rem;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0.7;
+}
+
+.toast-close:hover {
+  opacity: 1;
+}
+
+/* ---------- Lobby: list + detail ------------------------------------------ */
+
+.lobby {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.lobby-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 0.85rem;
+  flex-wrap: wrap;
+}
+
+.lobby-head h2 {
+  font-size: 1.35rem;
+}
+
+/* Two columns that both run the full height of the page, so the lobby never
+   ends in a ragged band of empty background. Each column's last block is
+   pushed to the bottom edge. */
+.lobby-grid {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(300px, 380px) 1fr;
+  gap: 1.25rem;
+  align-items: stretch;
+}
+
+.lobby-col {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+/* Anchored to the bottom of its column with a rule above it, so the slack
+   between the column's main content and its footer reads as a deliberate
+   divider rather than a hole in the page. */
+.lobby-col-tail {
+  margin-top: auto;
+  padding-top: 1.25rem;
+  border-top: 2px solid var(--border-soft);
+}
+
+.game-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.game-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  background: var(--panel);
+  border: 2px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.8rem 1rem;
+}
+
+.game-row:hover {
+  border-color: var(--text-faint);
+}
+
+.game-row-active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  box-shadow: 3px 3px 0 var(--accent-line);
+}
+
+.game-row-hit {
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  box-shadow: none;
+}
+
+.game-row-main {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  min-width: 0;
+}
+
+.game-row-name {
+  font-weight: 800;
+  font-size: 0.98rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.game-row-meta {
+  font-size: 0.74rem;
+  color: var(--text-faint);
+}
+
+.game-row-actions {
+  display: flex;
+  gap: 0.3rem;
+  flex: none;
+}
+
+.game-detail {
+  flex: 1;
+  background: var(--panel);
+  border: 2px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 1.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1.1rem;
+}
+
+.game-detail .btn-primary {
+  margin-top: auto;
+  align-self: flex-start;
+}
+
+/* Capped: a full-height dashed box with one line of text in it is a bigger
+   void than the gap it was meant to fill. */
+.game-detail-empty {
+  flex: none;
+  min-height: 240px;
+  max-height: 320px;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  color: var(--text-faint);
+  gap: 0.5rem;
+  border-style: dashed;
+}
+
+.game-detail-empty-mark {
+  font-size: 2.2rem;
+  opacity: 0.4;
+}
+
+.game-detail-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.game-detail-top h3 {
+  font-size: 1.5rem;
+  margin-bottom: 0.3rem;
+}
+
+.game-detail-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.tag {
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  padding: 0.24rem 0.6rem;
+  border-radius: 999px;
+  background: var(--panel-2);
+  border: 2px solid var(--border);
+  color: var(--text-dim);
+}
+
+.tag-hidden {
+  border-color: var(--warn);
+  color: var(--warn);
+}
+
+.tag-static {
+  border-color: var(--success);
+  color: var(--success);
+}
+
+.badge-imported,
+.badge-builtin {
+  font-size: 0.62rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 0.14rem 0.45rem;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+
+.badge-imported {
+  background: var(--accent-soft);
+  color: var(--accent);
+  border: 2px solid var(--accent-line);
+}
+
+/* Deliberately quieter than "imported" — it marks the default state, so it
+   should read as a label rather than compete with the accent badge. */
+.badge-builtin {
+  background: var(--panel-3);
+  color: var(--text-faint);
+  border: 2px solid var(--border);
+}
+
+.game-detail-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(90px, 1fr));
+  gap: 0.9rem;
+  padding: 1rem 0;
+  border-top: 2px solid var(--border-soft);
+  border-bottom: 2px solid var(--border-soft);
+}
+
+.game-detail-stats dt {
+  font-size: 0.66rem;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--text-faint);
+  margin-bottom: 0.2rem;
+}
+
+.game-detail-stats dd {
+  margin: 0;
+  font-weight: 800;
+  font-size: 1.3rem;
+}
+
+.game-detail-rules {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  font-size: 0.88rem;
+  line-height: 1.45;
+  color: var(--text-dim);
+}
+
+.game-detail-rules li {
+  position: relative;
+  padding-left: 1.1rem;
+}
+
+.game-detail-rules li::before {
+  content: '♦';
+  position: absolute;
+  left: 0;
+  top: 0.05em;
+  font-size: 0.7em;
+  color: var(--accent);
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.field > span {
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.field-grow {
+  flex: 1 1 220px;
+}
+
+.seat-picker {
+  display: flex;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+
+.seat-chip {
+  font: inherit;
+  font-weight: 700;
+  font-size: 0.85rem;
+  padding: 0.45rem 0.9rem;
+  border-radius: 999px;
+  border: 2px solid var(--border);
+  background: var(--panel-2);
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+.seat-chip:hover {
+  border-color: var(--text-faint);
+}
+
+.seat-chip-active {
+  background: var(--accent);
+  border-color: var(--accent-ink);
+  color: var(--accent-ink);
+}
+
+/* Round-count stepper — matches the seat chips' pill language. */
+.round-picker {
+  display: flex;
+  align-items: stretch;
+  gap: 0.4rem;
+}
+
+.round-step {
+  width: 2.4rem;
+  flex: 0 0 auto;
+  font-size: 1.1rem;
+  font-weight: 800;
+  line-height: 1;
+  padding: 0;
+}
+
+.round-input {
+  font: inherit;
+  font-weight: 800;
+  font-size: 0.95rem;
+  width: 4.5rem;
+  text-align: center;
+  padding: 0.45rem 0.5rem;
+  border-radius: 8px;
+  border: 2px solid var(--border);
+  background: var(--panel-2);
+  color: var(--text);
+}
+
+.round-input:focus-visible {
+  outline: none;
+  border-color: var(--accent-ink);
+}
+
+/* The spinners duplicate the -/+ buttons and crowd a narrow field. */
+.round-input::-webkit-outer-spin-button,
+.round-input::-webkit-inner-spin-button {
+  appearance: none;
+  margin: 0;
+}
+
+.round-input {
+  -moz-appearance: textfield;
+}
+
+.field-hint {
+  font-size: 0.72rem;
+  color: var(--text-faint);
+}
+
+.panel {
+  background: var(--panel);
+  border: 2px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1.15rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.panel-row {
+  flex-direction: row;
+  align-items: flex-end;
+  flex-wrap: wrap;
+}
+
+/* In a narrow column the row wraps; a lone small button stranded on its own
+   line looks accidental, so let it take the width instead. */
+.panel-row > .btn {
+  flex: 1 1 auto;
+}
+
+.section-title {
+  font-size: 1.1rem;
+  margin-bottom: 0.3rem;
+}
+
+.section-sub {
+  margin: 0 0 0.9rem;
+  color: var(--text-faint);
+  font-size: 0.85rem;
+}
+
+/* ---------- Cards -------------------------------------------------------- */
+
+.card {
+  position: relative;
+  display: block;
+  background: var(--card-face);
+  color: var(--card-ink);
+  border: 1.5px solid var(--card-edge);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-soft);
+  font-weight: 700;
+  font-family: var(--font-ui);
+  user-select: none;
+  padding: 0;
+  flex: none;
+  overflow: hidden;
+}
+
+.card-sm {
+  width: 40px;
+  height: 58px;
+}
+
+.card-md {
+  width: 54px;
+  height: 78px;
+}
+
+.card-lg {
+  width: 58px;
+  height: 84px;
+}
+
+.card-suit-S {
+  color: var(--suit-spade);
+}
+
+.card-suit-H {
+  color: var(--suit-heart);
+}
+
+.card-suit-D {
+  color: var(--suit-diamond);
+}
+
+.card-suit-C {
+  color: var(--suit-club);
+}
+
+.card-corner {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  line-height: 0.92;
+  font-size: 0.66rem;
+  font-weight: 800;
+  z-index: 2;
+}
+
+.card-lg .card-corner {
+  font-size: 0.78rem;
+}
+
+.card-corner-tl {
+  top: 3px;
+  left: 4px;
+}
+
+.card-corner-br {
+  bottom: 3px;
+  right: 4px;
+  transform: rotate(180deg);
+}
+
+/* The corner glyph is the only suit marker visible on a fanned hand, so it is
+   sized to render its own shape rather than a smudge. */
+.card-mini-suit {
+  font-size: 0.68rem;
+}
+
+.card-lg .card-mini-suit {
+  font-size: 0.78rem;
+}
+
+.card-face-art {
+  position: absolute;
+  inset: 20% 25%;
+  display: block;
+}
+
+.card-pips {
+  position: absolute;
+  inset: 0;
+}
+
+.card-pip {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  font-size: 0.72rem;
+  line-height: 1;
+}
+
+.card-lg .card-pip {
+  font-size: 0.92rem;
+}
+
+.card-md .card-pip {
+  font-size: 0.76rem;
+}
+
+.card-pip-inverted {
+  transform: translate(-50%, -50%) rotate(180deg);
+}
+
+.card-ace {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  font-size: 1.85rem;
+  line-height: 1;
+}
+
+.card-lg .card-ace {
+  font-size: 2.4rem;
+}
+
+.card-court {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  border: 2px solid currentColor;
+  border-radius: 3px;
+}
+
+.card-court-letter {
+  font-size: 1.5rem;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.card-lg .card-court-letter {
+  font-size: 1.85rem;
+}
+
+.card-court-suit {
+  position: absolute;
+  bottom: 3px;
+  font-size: 0.7rem;
+}
+
+.card-sm .card-face-art,
+.card-sm .card-corner {
+  display: none;
+}
+
+.card-clickable {
+  cursor: pointer;
+  transition: transform 0.14s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.14s;
+}
+
+.card-playable {
+  box-shadow: 0 0 0 2px var(--accent), var(--hard-shadow-sm);
+}
+
+.card-clickable:hover {
+  transform: translateY(-12px);
+  box-shadow: 0 0 0 2px var(--accent-hover), var(--hard-shadow);
+  z-index: 3;
+}
+
+.my-hand:has(.card-playable) .card:not(.card-playable) {
+  opacity: 0.55;
+  filter: saturate(0.7);
+}
+
+/* Card back: flat ink with a thin accent keyline and a plain mark. */
+.card-back {
+  display: grid;
+  place-items: center;
+  background: #1c1d20;
+  border-color: rgba(255, 255, 255, 0.08);
+  box-shadow: inset 0 0 0 2px var(--accent-line), var(--shadow-soft);
+}
+
+.card-back-crest {
+  color: var(--accent);
+  font-size: 1rem;
+  opacity: 0.85;
+}
+
+.card-sm .card-back-crest {
+  font-size: 0.75rem;
+}
+
+/* ---------- Result popup (round / game over) ----------------------------- */
+
+.result-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: grid;
+  place-items: stretch center;
+  justify-items: end;
+  padding: 0;
+  background: rgba(9, 10, 11, 0.6);
+}
+
+.result-card {
+  position: relative;
+  width: 100%;
+  max-width: 460px;
+  height: 100%;
+  max-height: 100vh;
+  overflow-y: auto;
+  padding: 2rem 1.75rem;
+  border-left: 2px solid var(--border);
+  background: var(--panel);
+  animation: resultSlide 0.24s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes resultSlide {
+  from {
+    transform: translateX(24px);
+    opacity: 0;
+  }
+}
+
+.result-head {
+  margin-bottom: 1.5rem;
+}
+
+.result-title {
+  font-size: 1.9rem;
+  letter-spacing: -0.01em;
+}
+
+.result-verdict {
+  margin: 0.4rem 0 0;
+  font-size: 1.02rem;
+  font-weight: 700;
+}
+
+.result-verdict-win {
+  color: var(--success);
+}
+
+.result-verdict-loss {
+  color: var(--text-dim);
+}
+
+.result-verdict-neutral {
+  color: var(--text-dim);
+}
+
+.result-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.88rem;
+}
+
+.result-table thead th {
+  padding: 0 0.4rem 0.5rem;
+  font-size: 0.64rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+  text-align: left;
+  border-bottom: 2px solid var(--border);
+  white-space: nowrap;
+}
+
+.result-col-num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.result-col-rank {
+  width: 2rem;
+  text-align: center;
+}
+
+.result-row td {
+  padding: 0.7rem 0.4rem;
+  border-bottom: 1px solid var(--border-soft);
+  vertical-align: middle;
+}
+
+.result-row-win {
+  background: var(--accent-soft);
+}
+
+.result-rank {
+  display: inline-grid;
+  place-items: center;
+  width: 1.5rem;
+  height: 1.5rem;
+  border-radius: 50%;
+  font-size: 0.74rem;
+  font-weight: 800;
+  background: var(--panel-3);
+  border: 2px solid var(--border);
+  color: var(--text-dim);
+}
+
+.result-rank-1 {
+  background: var(--accent);
+  border-color: var(--accent-ink);
+  color: var(--accent-ink);
+}
+
+.result-name {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.98rem;
+  font-weight: 800;
+}
+
+.result-you {
+  font-size: 0.56rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 0.1rem 0.34rem;
+  border-radius: 3px;
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
+.result-row-you td:first-child {
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.result-roster {
+  display: block;
+  font-size: 0.74rem;
+  color: var(--text-faint);
+  margin-top: 0.1rem;
+}
+
+.result-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  margin-top: 0.35rem;
+}
+
+.result-badge {
+  font-size: 0.6rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 0.12rem 0.42rem;
+  border-radius: 4px;
+  border: 2px solid var(--border);
+  color: var(--text-dim);
+}
+
+.result-badge-declarer {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.result-badge-made {
+  border-color: var(--success);
+  color: var(--success);
+}
+
+.result-badge-missed {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.result-delta {
+  font-weight: 800;
+}
+
+.result-delta-up {
+  color: var(--success);
+}
+
+.result-delta-down {
+  color: var(--danger);
+}
+
+.result-total {
+  font-size: 1.05rem;
+  font-weight: 800;
+}
+
+.result-actions {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 0.6rem;
+  margin-top: 1.5rem;
+}
+
+.result-next {
+  position: relative;
+  overflow: hidden;
+  min-width: 11rem;
+}
+
+.result-next:disabled {
+  opacity: 1;
+  cursor: default;
+}
+
+.result-next-fill {
+  position: absolute;
+  inset: 0;
+  transform-origin: left center;
+  background: rgba(0, 0, 0, 0.22);
+  transition: transform 0.1s linear;
+  pointer-events: none;
+}
+
+/* ---------- Confirm modal ------------------------------------------------ */
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(9, 10, 11, 0.6);
+  display: grid;
+  place-items: center;
+  z-index: 60;
+  padding: 1rem;
+}
+
+.modal {
+  width: 100%;
+  max-width: 390px;
+  background: var(--panel);
+  border: 2px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--hard-shadow-lg);
+  padding: 1.6rem;
+}
+
+.modal h3 {
+  margin-bottom: 0.6rem;
+  font-size: 1.2rem;
+}
+
+.modal p {
+  color: var(--text-dim);
+  font-size: 0.9rem;
+  line-height: 1.55;
+  margin: 0 0 1.25rem;
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.6rem;
+}
+
+/* ---------- Responsive --------------------------------------------------- */
+
+/* On a short window the lobby's natural height tips just past the viewport and
+   the whole page picks up a scrollbar. Trim the vertical rhythm rather than
+   let that happen. */
+@media (max-height: 780px) and (min-width: 861px) {
+  .app {
+    padding: 0.85rem 1.25rem;
+  }
+
+  .app-bar {
+    padding: 0.5rem 1rem;
+    margin-bottom: 0.85rem;
+  }
+
+  .lobby-head {
+    margin-bottom: 0.6rem;
+  }
+
+  .game-detail {
+    padding: 1.15rem;
+    gap: 0.8rem;
+  }
+
+  .game-detail-stats {
+    padding: 0.7rem 0;
+  }
+
+  .game-detail-empty {
+    min-height: 170px;
+  }
+
+  .game-detail-rules {
+    gap: 0.4rem;
+  }
+
+  .lobby-col-tail {
+    padding-top: 0.9rem;
+  }
+
+  .lobby-col-tail .section-sub {
+    margin-bottom: 0.6rem;
+  }
+
+  .panel {
+    padding: 0.9rem;
+  }
+}
+
+@media (max-width: 860px) {
+  .lobby-grid {
+    grid-template-columns: 1fr;
+    gap: 1.75rem;
+  }
+
+  .lobby-col-tail {
+    margin-top: 0;
+    padding-top: 0.5rem;
+  }
+
+  /* Below this width the play screens stop being a single-screen layout and
+     scroll normally — a phone can't fit a felt plus 13 cards otherwise. */
+  .app-play {
+    height: auto;
+    min-height: 100dvh;
+    overflow: visible;
+  }
+}
+
+@media (max-width: 860px) {
+  /* Kept in step with --card-w in table.css: the hand's fan maths needs the
+     real rendered card width to decide how far to overlap. */
+  .card-lg {
+    width: 50px;
+    height: 72px;
+  }
+}
+
+@media (max-width: 640px) {
+  .app {
+    padding: 0.75rem;
+  }
+
+  .app-bar {
+    flex-wrap: wrap;
+  }
+
+  .result-card {
+    padding: 1.5rem 1.1rem;
+    max-width: 100%;
+  }
+
+  .result-title {
+    font-size: 1.5rem;
+  }
+
+  .result-table {
+    font-size: 0.82rem;
+  }
+
+  .result-row td {
+    padding: 0.6rem 0.3rem;
+  }
+
+  .result-actions {
+    flex-direction: column-reverse;
+  }
+
+  .result-actions .btn {
+    width: 100%;
+  }
+}
+
+/* --- Connection banner ----------------------------------------------------
+   Pinned to the top of the viewport rather than sitting in the layout flow:
+   losing the link mid-trick is exactly when the table is scrolled and the
+   player is looking at their hand, not the page header. */
+.link-banner {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.6rem;
+  padding: 0.55rem 1rem;
+  font-size: 0.85rem;
+  text-align: center;
+  border-bottom: 1px solid transparent;
+  backdrop-filter: blur(6px);
+}
+
+.link-banner em {
+  font-style: normal;
+  opacity: 0.75;
+}
+
+.link-banner-reconnecting {
+  background: color-mix(in srgb, var(--warn) 18%, transparent);
+  border-bottom-color: var(--warn);
+  color: var(--warn);
+}
+
+.link-banner-offline {
+  background: var(--danger-soft);
+  border-bottom-color: var(--danger);
+  color: var(--danger);
+}
+
+.link-dot {
+  width: 0.55rem;
+  height: 0.55rem;
+  border-radius: 50%;
+  background: currentColor;
+  flex: none;
+}
+
+.link-banner-reconnecting .link-dot {
+  animation: link-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes link-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.35;
+    transform: scale(0.8);
+  }
+}
+
+/* Respect a reduced-motion preference — the colour alone carries the message. */
+@media (prefers-reduced-motion: reduce) {
+  .link-banner-reconnecting .link-dot {
+    animation: none;
+  }
+}
