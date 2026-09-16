@@ -18,6 +18,24 @@ a user can edit `rules.json` to get a different game stops being true. If a
 mechanic cannot be named generically, that is a signal the abstraction is
 wrong, not that a special case is warranted.
 
+## Keep the AI game designer in step
+
+Two files mirror this one, and both go stale silently:
+
+- **`backend/src/core/authoring/dsl-reference.ts`** — `DSL_REFERENCE` teaches the
+  model the vocabulary, and `DSL_LIMITATIONS` tells it what to refuse. When you
+  land a primitive below, add it to the first and **delete its entry from the
+  second**, or the designer will keep declining to produce games it can now
+  express. `dsl-reference.test.ts` catches the additive half automatically (it
+  reads the union types straight out of `rules-schema.ts`); it cannot catch a
+  limitation that is no longer true.
+- **`GAME_DESIGNER.md`** §3 quotes the blocked list.
+
+The two entries that matter most are `CARD_EXCHANGE` and `microPhases` (§1
+below): both are *declarable in the schema and generate no moves*, so a draft
+using either passes validation and then deadlocks a real hand. Until the
+interpreter exists, the designer must keep refusing to emit them.
+
 ---
 
 ## Missing primitives, ordered by how many games they unlock

@@ -1,0 +1,5 @@
+- [Hybrid Card Game — build status](project_hybrid_card_game_status.md) — production-ready as of 2026-08-27; verified against real Redis/Mongo/Resend; open credential rotations
+- [Collaboration style](feedback_collaboration_style.md) — plain-analogy explanations on request; ask before ambiguous setup choices, then proceed autonomously
+- [Keep PROJECT_JOURNAL.md & PROBLEMS.md updated](feedback_keep_project_journal_updated.md) — update both every time a real change is made, not just on request
+- [Reuse existing persistence/caching patterns](feedback_reuse_existing_persistence_patterns.md) — no user data on local disk; mirror AuthService/SessionCache-style caching, don't invent new schemes
+- [JS experience level](user_js_experience_level.md) — basic JS only; build TS/backend explanations up from JS fundamentals

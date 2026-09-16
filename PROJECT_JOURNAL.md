@@ -214,6 +214,7 @@ Hybrid_ Card_Game/
 ├── .env / .env.example         # Runtime config — see §8 for the full variable reference
 ├── package.json                 # Root workspace manifest — npm workspaces: shared, backend, frontend
 ├── TODO.md                     # Tier C games + the engine primitives each is blocked on — see §10
+├── GAME_DESIGNER.md            # Deep-dive on the AI game designer (mechanics; §19 here is the decisions)
 ├── game-plugins/               # Plugin LIBRARY — validated rules.json+strategy.md pairs, deliberately
 │   │                           # NOT on the scan path; copy in or import via POST /api/plugins (§10)
 │   ├── README.md               # Install/edit instructions + per-plugin caveats
@@ -240,6 +241,10 @@ Hybrid_ Card_Game/
 │       │   ├── obfuscation/     # fog-of-war.ts — per-seat state masking
 │       │   ├── ai/              # provider.ts, groq-provider.ts, gemini-provider.ts,
 │       │   │                    # provider-router.ts, prompt.ts, decide.ts, decision-logger.ts
+│       │   ├── authoring/       # AI game designer (§19) — dsl-reference.ts (what the model may
+│       │   │                    # write), draft-validator.ts (validate + actually play it),
+│       │   │                    # game-designer.ts (prompt/repair loop), design-service.ts,
+│       │   │                    # design-session-repository (Mongo/in-memory)
 │       │   ├── auth/            # auth-service.ts, password.ts (scrypt), user-repository (Mongo/in-memory),
 │       │   │                    # session-cache.ts (Redis/in-memory)
 │       │   ├── match/           # match-manager.ts — drives a single match's turn loop
@@ -251,7 +256,7 @@ Hybrid_ Card_Game/
 │       ├── games/               # THE actual plugin scan root (gamesRoot in server.ts)
 │       │   ├── 29/{rules.json, strategy.md}
 │       │   └── callbreak/{rules.json, strategy.md}
-│       ├── http/                # auth-routes.ts, plugin-routes.ts, cors.ts
+│       ├── http/                # auth-routes.ts, plugin-routes.ts, design-routes.ts, cors.ts
 │       ├── ws/                  # ws-server.ts (transport), origin.ts (allowlist parsing)
 │       └── lifecycle/           # shutdown.ts
 │
@@ -268,7 +273,8 @@ Hybrid_ Card_Game/
             ├── Card.tsx
             ├── BidPicker.tsx
             ├── ResultModal.tsx
-            └── ImportPlugin.tsx  # Runtime plugin upload/edit UI
+            ├── ImportPlugin.tsx  # Runtime plugin upload/edit UI
+            └── GameDesigner.tsx  # "Describe a game" panel — draft, refine, edit, publish (§19)
 ```
 
 ---
@@ -277,7 +283,7 @@ Hybrid_ Card_Game/
 
 ### 6.1 Deliberately out of scope (per PRD or explicit later decision)
 - **Micro-phase interpreter** for the general "draw-then-return" pattern (PRD §4.2 Requirement B) — the DSL has a phase model that *could* support this, but the actual interpreter logic for 3-2-5's card-pulling mechanic was never built out. 3-2-5's `rules.json` (in the stray `325/` folder, see below) documents the mechanic in the DSL shape, but nothing executes it.
-- **`GeminiProvider` body** — the interface implementation exists (`gemini-provider.ts`) but is a stub, not wired to a real API call. `LLM_PROVIDER=gemini` would need this finished before it's usable.
+- **`GeminiProvider` is implemented but unexercised.** It makes a real `generateContent` call (and, since §19, implements `LLMCompletionProvider` too), so `LLM_PROVIDER=gemini` should work — but nothing in this project has ever run against a live Gemini key, and `config/env.ts` still warns as though it were a stub. Treat it as untested rather than unimplemented; the warning text is the thing that needs correcting when someone verifies it.
 - **Real-time speed games** (Slapjack) and **priority-stack games** (Magic: The Gathering) — explicitly out of scope per PRD §7, since the whole engine model assumes a synchronous turn-by-turn structure.
 
 ### 6.2 Known untested path
@@ -314,9 +320,12 @@ The draft 3-2-5 plugin that sat loose at the repo root is now `game-plugins/325/
 | `MONGODB_URI` | Atlas connection string | Required in production; falls back to in-memory locally with a warning |
 | `LLM_PROVIDER` | `groq` \| `gemini` | Default `groq` |
 | `GROQ_API_KEYS` / `GROQ_API_KEY` | Key pool for round-robin (newline/comma separated) | Multiple keys ≈ multiplied per-minute free-tier headroom |
-| `GROQ_MODEL` | Model name | Default `llama-3.1-8b-instant` in code; `.env.example` suggests `llama-3.3-70b-versatile` |
+| `GROQ_MODEL` | Model name | Default `llama-3.1-8b-instant` in code; `.env.example` sets `openai/gpt-oss-120b`, which the Medium/Hard/Extreme bot levels need since they vary `reasoning_effort` on it |
 | `GROQ_REASONING_EFFORT` | `low`\|`medium`\|`high`, reasoning-capable models only | Optional; also sets which `BotLevel` the host's difficulty picker defaults to (§3.6) |
 | `GEMINI_API_KEY` / `GEMINI_MODEL` | Only used if `LLM_PROVIDER=gemini` | Provider body is a stub — see §6.1 |
+| `DESIGNER_MODEL` | Model the AI game designer drafts with (§19) | Default `openai/gpt-oss-120b` (Groq) / `gemini-2.0-flash` (Gemini). Deliberately **not** `GROQ_MODEL` — a game seat wants the fastest model that can pick from a list, drafting wants the most capable one |
+| `DESIGNER_MAX_TOKENS` | Reply ceiling per drafting call | Default 8000. Groq reserves this against your per-minute budget **up front**, so on a free 8000 TPM key set `3200` or every call 413s before generating. See `GAME_DESIGNER.md` §7 |
+| `DESIGNER_TIMEOUT_MS` | Wall-clock budget per drafting call | Default 90000 — far longer than any bot-seat timeout, because a slow draft blocks nobody but the person who asked for it |
 | `REDIS_URL` | Enables multi-node clustering | Empty = single-node in-memory. **Hard startup failure if set + unreachable in production** |
 | `REDIS_KEY_PREFIX` | Namespacing for shared Redis | Default `hcg` |
 | `REDIS_COMMAND_TIMEOUT_MS` | Redis command timeout | Default 3000 |
@@ -335,15 +344,17 @@ The draft 3-2-5 plugin that sat loose at the repo root is now `game-plugins/325/
 
 ---
 
-## 9. Current status snapshot (as of 2026-07-31)
+## 9. Current status snapshot (as of 2026-08-28)
 
-- **Tests:** 244/244 passing (21 test files), full workspace typecheck and build clean. (Was 149 before the Tier B pass in §10 added `game-library.test.ts` and `tier-b.test.ts`; §11 added 6 more covering imported-plugin ownership.)
+- **Tests:** 399/399 passing (30 test files), full workspace typecheck and build clean — including 21 cases that run against a **real Redis server** when `REDIS_TEST_URL` is set (skipped without it, so the default run stays offline). Verified 2026-08-28. (§19 added 63 across four files for the AI game designer; was 149 before the Tier B pass in §10 added `game-library.test.ts` and `tier-b.test.ts`; §11 added 6 more covering imported-plugin ownership; §15 added 11 more and a new `prompt.test.ts` for trick memory. Verified by running the suite on 2026-08-25, not carried forward from the previous entry.)
 - **Manually verified end-to-end** against a live running server: two real players, room creation → start → play, reconnect-resumes-seat, seat-steal refusal, rate limiting, origin rejection, and the `AUTH_FAILED` close code on a bad token.
 - **Visual design is currently "Ink & Felt"** (Phase 7) — flat dark/light tokens, hard offset shadows, locked-viewport play screen. This superseded the earlier "classic-luxury" mahogany/brass/cream look from Phase 6; if you see the two described inconsistently anywhere outside this journal, this is the current one.
 - **Outstanding action items (carried over, still open unless you've done them):**
-  1. Rotate the Groq API key and MongoDB Atlas password that were present in plaintext in `.env` early in the project.
+  1. Rotate the credentials that have been held in plaintext: the Groq API key, the MongoDB Atlas password, and — added 2026-08-27, since they were supplied over a chat transcript — the Redis Cloud password and the Resend API key.
   2. Confirm your current IP is still Atlas-allowlisted under Network Access (this drifts if you change networks).
-  3. Before any real multi-node deploy, run the cluster against an actual Redis instance at least once (§6.2) — everything today is verified only through the in-memory/local-backplane equivalents.
+  3. ~~Run the cluster against an actual Redis instance~~ — done 2026-08-27, see §16. 21/21 integration cases plus a two-process cluster and a hard-kill failover, all against real Redis.
+  6. Verify a Resend sending domain before real users. `onboarding@resend.dev` only delivers to the Resend account owner's own address, so password reset silently fails for everyone else.
+  7. Switch `REDIS_URL` to the `rediss://` TLS endpoint — the current `redis://` carries session tokens and match state in clear text to a remote host.
   4. ~~Decide the fate of the stray root-level `325/` folder~~ — done 2026-07-31, see §6.3.
   5. The seven `game-plugins/` games are engine-verified (they validate, deal, play to completion and score correctly under test) but **none has been played by a human through the UI**. Install one and play it before treating it as shipped.
 
@@ -525,6 +536,351 @@ Also unchanged: nothing reconciles a repository id that happens to collide with 
 
 ---
 
-## 15. How to keep this doc useful
+## 15. Trick history, and difficulty as memory rather than thinking time (2026-08-25)
+
+### Why this happened
+`GameState` kept at most two tricks: `currentTrick`, and `lastTrick`. `lastTrick` existed for an *animation* reason, not a memory one — the engine clears `currentTrick` in the same transition that plays the final card, so without it the client would jump from three cards to zero and the winning card would never be seen. Every trick before that was discarded outright.
+
+That left the AI unable to do the one thing both shipped `strategy.md` files explicitly instruct it to do. 29's says *"Track which point cards (J, 9, A, T) have already fallen"*; Callbreak's says *"count exactly who holds which remaining card in each suit"*. Neither was possible. `compilePrompt` never sent `lastTrick` at all, and `GroqProvider` posts exactly `[system, user]` per call with no conversation history — so a bot's recollection of the hand was not merely limited, it was **nil**. The strategy files promised a capability the plumbing could not deliver, and nothing anywhere signalled the gap.
+
+Two further things surfaced while looking at it:
+
+- **`tricksWon` and `handPoints` are both summaries *of* the trick history.** The design had discarded the source and kept only the derivations, so neither number was checkable against anything. A drift bug in either would have been invisible.
+- **Difficulty varied only thinking time** (`reasoning_effort` plus the timeout ladder), which is the weaker of the two available levers. Nobody loses a hand of 29 because they deliberated for 1.5s instead of 10; they lose because they forgot both Jacks had gone. Memory is what actually separates a weak card player from a strong one.
+
+### What changed
+- **`CompletedTrick` (`shared/src/game-state.ts`)** — `{ cards, winnerSeat, leadSuit }`, accumulated on `GameState.completedTricks` and reset every deal alongside `tricksWon`/`handPoints`. `apply-move.ts` appends where it previously overwrote `lastTrick`. `lastTrick` stays as its own field: the client's trick animation reads it on every state push and shouldn't have to index into a growing array.
+- **Passed through `fog-of-war.ts` unmasked.** Every card in it was played face up, so withholding it would hide *public* information rather than protect private information.
+- **`BotTier.memoryFraction` (`provider-router.ts`)** — a second ladder beside the timeout one: easy `0`, medium `0.25`, hard `0.6`, extreme `1`. `compilePrompt` keeps `ceil(fraction × tricksPlayed)` of the **most recent** tricks, because forgetting works backwards — a limited-memory bot should lose the opening of the hand first, the way an inattentive player does.
+- **Scaled against tricks *played*, not hand size**, so the levels converge early in a hand (nothing yet to remember) and diverge late (when recall decides it). It also means one ladder works for an 8-trick game of 29 and a 13-trick Callbreak without per-game numbers.
+- **The prompt admits what it is withholding.** `completedTricksPlayed` and `completedTricksShown` ride alongside the trimmed list, and the system prompt tells the model never to conclude a card is live merely because it hasn't seen it fall. This is the load-bearing detail: partial history presented *as complete* is worse than no history at all, because a model that believes it has seen every trick plays confidently into a card that fell three tricks ago, where one that knows it is missing tricks hedges.
+- **Compact encoding** (`"0:AS"` rather than a nested object) because this is the one prompt field that grows through the hand and it rides on every turn against a per-level latency budget. Measured on a real 29 hand: ~34 tokens per trick, so ~275 extra tokens at the end of a full hand — against roughly 317 for the whole rest of the prompt.
+
+### Why this is the better difficulty lever
+Three reasons, worth keeping because they generalise:
+
+1. **It spends the budget where the budget exists.** Easy has the tightest timeout (1500ms) and now gets no history; extreme has 10s and gets all of it. The token cost lands exactly where there is room for it.
+2. **It is honest difficulty.** The usual way to weaken a bot is to make it deliberately choose a worse move, which reads as random when a player notices. A memory-limited bot still plays the best move it can for what it knows — it just knows less, like a real opponent who isn't paying attention.
+3. **It is the only lever that works on every provider.** `reasoning_effort` is Groq-only, and a non-reasoning `GROQ_MODEL` rejects it outright (see `PROBLEMS.md`). Under `LLM_PROVIDER=gemini` all four tiers share one provider instance, so before this change difficulty did *nothing* there beyond the timeout. Trimming a prompt works anywhere.
+
+### The rule this established
+**Store facts, derive views** — and derive each viewer's numbers from only what *that viewer* may see.
+
+A fact is something that happened and is unrecoverable if not written down (the trick history). A view is computable from facts on demand (the point value of a hand). Storing views duplicates truth and lets two copies disagree.
+
+The second half matters more than it looks, and is why *"points still in each player's hand"* was considered and rejected rather than added alongside this. Card-level masking would still be intact, but telling a viewer "West's hand is worth 7 points" narrows six unknown cards enormously in a game whose only point cards are J/9/A/T. **A summary of secret data is still secret data**, and `fog-of-war.ts` has no way to know that a number computed elsewhere is a fingerprint of the cards it just masked.
+
+### What this deliberately does not do
+- **No trimming inside `fog-of-war.ts`.** Masking answers *"what may this viewer see"*; memory answers *"how much does this bot use"*. They are different questions, and the mask is shared with the human client — difficulty leaking into it would blank a watching player's trick history. `prompt.test.ts` guards this explicitly.
+- **No per-level `strategy.md`.** 29's guidance to track fallen point cards stays as written even though an easy bot cannot follow it; it describes how the game is best played, which is true at every level. Forking strategy per difficulty would mean four copies of every game's guidance to keep in sync. The memory note in the system prompt is what tells a bot what it is actually working with.
+- **No derived conveniences** (`voidSuits`, `cardsRemaining`, per-seat point totals). All are one loop over `completedTricks` away, and each stored copy is another thing to keep in sync for no gain.
+- **The `allTiers` test fixture is still duplicated** across `match-manager.test.ts`, `match-gateway.test.ts` and `ws-server.test.ts`, each with its own hand-copied shape rather than `satisfies Record<BotLevel, BotTier>`. That duplication is exactly why adding one field broke three files. Left alone to keep this change scoped; worth collapsing next time one of them is touched.
+
+### Testing
+`prompt.test.ts` is new (7 cases): full history by default, nothing at fraction 0 *with the withheld count still reported*, most-recent-not-earliest, the whole ladder, early-hand convergence, the mask staying untrimmed, and the system prompt carrying the warning. `playthrough.test.ts` gained two: a full 29 hand keeps all 8 tricks accounting for the 32-card deck exactly once, with `tricksWon` and `handPoints` re-derived from the history and asserted equal — the invariant that was previously uncheckable — plus reset on the next deal. `provider-router.test.ts` gained the strictly-increasing memory ladder and the Gemini case where memory separates levels a shared provider cannot. Suite went 261 → **272 across 23 files**, full workspace typecheck and build clean.
+
+---
+
+## 16. Production readiness — running it the way it would be deployed (2026-08-27)
+
+### Why this happened
+
+The server had a full production story on paper: optional Mongo, optional Redis, optional mail, graceful shutdown, health and readiness probes, a boot-time config validator that refuses to start a misconfigured production process. What it did not have was a single instance of anyone *running* any of it. The dev loop — `tsx watch src/server.ts`, one process, `.env` fully populated — exercises none of those paths.
+
+So this pass did the deployment, not the design. The design mostly held. Five things did not, and the interesting part is that they share a shape: **every one was invisible to the dev loop and fatal outside it.** None failed a test. None failed a typecheck. Several were contradicted, in writing, by comments in the very files that had the bug.
+
+### What the real-Redis run proved
+
+`PROBLEMS.md` had carried an explicit **OPEN** item since the clustering work: the `Redis*` classes, their Lua CAS scripts and the `ioredis` wiring had only ever been exercised through in-memory siblings and an in-process backplane running identical routing logic. Not one line of Lua had executed. The instruction was "do not trust a multi-node production deploy until this has run against a real Redis at least once."
+
+It has now, twice over:
+
+- **`redis-integration.test.ts` against Redis Cloud: 21/21, first run, ~29s.** Lease CLAIM/RENEW/RELEASE, the token-bucket rate limiter, cross-node pub/sub and request/reply (including `RemoteError` name preservation), the session cache's miss-vs-known-bad distinction, cluster-wide connection counting, and a two-gateway match round trip.
+- **Two actual server processes, one Redis, one Mongo.** A session issued by node A authenticated on node B. A match created on A was joined and played through B, with `STATE_UPDATE` fanning back to both. Then node A was **hard-killed mid-match** — no graceful shutdown, so no lease release and no socket close, which is the failure mode the whole lease design exists for. Node B waited out the lease and rebuilt the match from its durable snapshot: `[gateway] recovering match "…" from snapshot @ seq 7`.
+
+Nothing in the Redis layer needed changing. That is worth stating plainly, because the honest prior was that something would.
+
+One thing the failover test got wrong first, which is itself a useful record: reconnecting to a recovered match with `ENTER_ROOM` returns `MATCH_NOT_FOUND`, and that is **correct**. `ENTER_ROOM` looks for a *room*, and `startMatch` deletes the room the moment cards are dealt. A recovered match has no room, only state. `JOIN` is the reconnect verb — idempotent server-side, and what the real client re-sends.
+
+### The five failures, and what they have in common
+
+1. **`npm run build && npm start` had never worked.** `tsc` copies no non-`.ts` files, so `dist/games/` never existed and `PluginManager` died at boot. Dev survives because `tsx src/server.ts` resolves the scan to `src/games/`, which is populated. The dev path and the production path resolved *different directories*, and only one of them existed.
+2. **A missing `GROQ_API_KEYS` killed the boot** — while `config/env.ts` rated that exact condition non-fatal in a comment explaining that the engine falls back to `legal_moves[0]`, and `CLAUDE.md` promised an empty `.env` works.
+3. **The production frontend bundle hard-coded `ws://localhost:3001`** — so a deployed client would try to open a socket to the *player's own machine*.
+4. **Password reset had no page to land on.** Token minting, mail delivery, expiry, single use, session revocation: all built, all tested, all reachable only by a link that 404'd. `change-password`, `sessions` and `logout-all` were in the same state.
+5. **`env.test.ts` did not compile**, so the backend build was red — meaning the production-readiness code itself had never been typechecked.
+
+What they share: **each is a seam between two things that are individually correct.** Not one is a logic error. `GroqProvider` is right to refuse construction without a key; `createBotTiersFromEnv` was wrong to let that reach `main()`. `tsc` is right not to copy JSON; the build script was missing. The localhost fallback is right in dev and wrong in a build. The reset endpoints are right; nothing called them. Unit tests are structurally blind to this class of bug, because a seam is precisely what a unit test mocks away.
+
+The general form: **a test proves a component does what it says. Only running the system proves the components were connected.**
+
+### The rule this established
+
+**A graceful degradation you cannot observe is a silent failure.**
+
+Every optional dependency here degrades quietly, and that is right for `npm run dev`. In production the same behaviour means a process that boots "fine", stores accounts in memory, mails nobody, and plays its first legal move every turn — while reporting healthy. `config/env.ts` inverts it: the same condition is a warning in development and a refusal to start in production, where a deploy catches it instead of a user at 3am.
+
+Two corollaries came out of applying it:
+
+- **Degrade loudly or not at all.** `UnconfiguredProvider` *fails* rather than quietly playing `legal_moves[0]` itself. A provider that silently returned a legal move would make a misconfigured server indistinguishable from a working one in the logs — which is the failure mode the whole pass exists to remove. The fallback still happens, one layer up in `decideTurn`, where it is logged with the reason.
+- **Fail the build, not the boot, where you can.** `copy-games.mjs` errors if it copied nothing, rather than leaving a server that starts with an empty catalog.
+
+### What changed
+
+- **`backend/scripts/copy-games.mjs`**, wired into the backend `build` script, with a non-empty assertion.
+- **`UnconfiguredProvider` (`core/ai/provider.ts`)**, substituted by `createBotTiersFromEnv` for either provider when no key is configured. Boot banner: `AI provider: groq (unconfigured)`.
+- **One `resolveWsUrl()` in `frontend/src/api.ts`**, imported by `App.tsx` — the duplicated constant was half the bug. `VITE_WS_URL` wins; else dev keeps `localhost:3001`; else derive from `window.location` with `wss:` on `https:`. The shipped bundle contains no `localhost` string at all.
+- **The auth UI that was missing**: `ForgotPassword`, `ResetPassword`, `AccountPanel`, and an `AuthShell` extracted so the three signed-out screens share one set of chrome — a reset page that has drifted into looking like a different site is what makes a password link feel like phishing. `/reset-password` is checked in `App.tsx` **before** the signed-in gate, because not being able to sign in is the entire reason someone follows that link. No router dependency.
+- **`DEPLOYMENT.md`**, new: build order, the env table generated from `validateEnv`'s actual rules, single-origin vs split-origin, the `/health` vs `/ready` distinction a balancer needs, and the Resend sending-domain trap in bold.
+- **`.env.example`** gained every variable the in-flight work had added and never documented; **`frontend/.env.example`** now explains that leaving `VITE_WS_URL` unset is correct in both normal setups.
+
+### Two deliberate non-changes
+
+- **`onboarding@resend.dev` is still the default sender.** It delivers only to the Resend account owner's own address and rejects everyone else, so it is enough to verify the flow and not enough to ship. Documented in bold in `DEPLOYMENT.md` and next to the field in `.env.example` rather than papered over, because the alternative — swapping in a fake domain — would look configured while working *less*.
+- **`REDIS_URL` is still `redis://` in the local `.env`.** `validateEnv` already warns that an unencrypted connection to a remote Redis carries session tokens and match state in clear text. Changing someone's credentials is not this pass's call; `DEPLOYMENT.md` says where the TLS endpoint is.
+
+### Testing
+
+`provider-router.test.ts` gained four cases pinning the no-credentials behaviour (builds tiers rather than throwing, names the missing variable, *rejects* rather than silently substituting a move, and still uses the real provider when a key is present). `redis-integration.test.ts` runs whenever `REDIS_TEST_URL` is set, and is skipped without it so the default run stays offline and instant. Suite went 272 → **332 across 26 files**; full workspace typecheck and build clean.
+
+The rest of this pass was verified by running it, not by asserting it, and that distinction is the point of the whole section: the reset lifecycle end to end against a live server (enumeration-safe responses, single-use tokens, full session revocation), a real email accepted by Resend, the production refusal guard actually refusing, static serving with SPA fallback and correct cache headers, path traversal leaking nothing, and a same-origin WebSocket upgrade accepted while a cross-origin one gets a 403.
+
+---
+
+> Redis has its own deep dive in `REDIS.md` — all five uses, the Lua behind each, and what degrades how when it goes away.
+
+> The auth system has its own deep dive in `AUTH.md` — sessions-not-JWTs and what that buys, the scrypt cost-upgrade path, the three-state session cache, the WebSocket handshake, and the full password-reset flow.
+
+> How the session token *travels* — cookies vs bearer tokens, and why the WebSocket decided it — is in `SESSION_TRANSPORT.md`. It covers the general tradeoffs (CSRF vs XSS, `SameSite`, the hybrid refresh-cookie pattern), the five ways a socket can be authenticated, and the four reasons this project keeps the token in Web Storage with `Origin` checking at the upgrade.
+
+> *Which* Web Storage, and how long the session outlives the page, is the separate question `SESSION_PERSISTENCE.md` answers — per-tab `sessionStorage` with opt-in `localStorage` persistence, and the wrong-identity bug the original `localStorage`-only design caused. Read it before touching the storage functions in `frontend/src/api.ts`.
+
+## 17. Ending a match everybody left (2026-08-28)
+
+### The problem
+
+A seat whose owner has disconnected plays via AI — that is right, and it is what keeps three players from being held hostage by a fourth who closed their tab. But the rule was applied unconditionally, including when the fourth player *was* the last one. With nobody connected, no seat blocks the AI runner, so the table ran free: every seat played `legal_moves[0]` (the LLM call was deliberately skipped, since no one was watching the reasoning) for the full 120s no-human window. Hands finished. Rounds scored. A player who refreshed at a bad moment came back to a game that had moved on without them, played by nothing.
+
+The window existed to be forgiving of reconnects. It was instead a window in which the game played itself.
+
+### The decision
+
+**An AI seat moves only while somebody is there to see it.** When the last connection drops, the turn loop stops where it stands and the position freezes exactly as the last person to leave saw it. Reconnect inside `noHumanTimeoutMs` and play resumes from there; miss it and the match is **terminated**.
+
+Terminated means gone, not paused. `MatchGateway.releaseAbandoned` releases the lease, drops the match from memory, *and deletes its durable snapshot*. That last step is the whole difference: the snapshot is what `recover()` rebuilds a match from when a node dies, so leaving it behind would mean the next command naming that matchId quietly restarts a table everyone had walked away from — the un-terminated state the two-minute wait had just finished deciding against. A player who returns later gets `MATCH_NOT_FOUND` and lands in the lobby, which the client now handles by clearing the match rather than leaving a dead table on screen re-joining itself on every reconnect.
+
+### The countdown had to move out of the loop
+
+The old timeout was a deadline checked at the top of `driveAiTurns`. That only works while the loop is running — and the loop stopping is now the *first* thing that happens when everybody leaves. So it became a timer on the match (`LiveMatch.abandonTimer`), armed by `touchPresence` when the table empties and cleared the instant anyone comes back. `touchPresence` was already called from every path that can change who is connected (`connect`, `disconnect`, `syncNodePresence`, `evictStaleNodes`, and now `startMatch`/`adopt`), so arming and disarming rides on machinery that already existed. `emptySince` went away: the timer's existence *is* "the table is empty and counting down," and a second field saying the same thing is a second field to keep in sync.
+
+`MatchManager` still only sets a flag. Releasing leases and deleting snapshots is the gateway's knowledge, and pushing it down into the manager would put cluster concerns inside the pure-orchestration layer that deliberately has none.
+
+### What stopping the loop exposed
+
+Two paths had been quietly relying on the loop never stopping:
+
+- **Reconnecting never restarted anything.** `connect()` records presence and returns; the loop only resumed when the player made a move. If an AI seat was on the clock, they could not make one. Under the old behaviour the match was still running, so nobody noticed. The gateway's JOIN now snapshots the state for the reply and *then* kicks `manager.resume()` — snapshot first so the JOIN answers a consistent position, not awaited so a rejoin doesn't wait out however many AI turns come next.
+- **Watchers were not presence.** Only seated players were ever registered, so the host who starts an all-AI table and watches without sitting down counted as nobody — their match would freeze the instant it started and be terminated two minutes later while they sat looking at it. `ENTER_ROOM` now tracks presence like `JOIN` does, and `handleStart` calls the new `syncPresenceNow(matchId)` immediately after START rather than waiting for the 10s presence tick. **A match is empty only when nobody is looking at it at all**, which is the honest reading of "everybody left" and the one the feature needs.
+
+### Testing
+
+`match-manager.test.ts` gained five cases: the position is untouched after the last disconnect, termination fires once the window lapses, an all-AI table nobody sat down at is terminated rather than played out, reconnecting inside the window cancels the countdown outright (asserted well past the original deadline, so a merely-postponed verdict would fail), and the loop picks back up on rejoin. `match-gateway.test.ts` covers the cluster half: a terminated match's snapshot is deleted, and a second node cannot recover it afterwards.
+
+Four existing tests had encoded the old behaviour and were rewritten rather than patched — every one of them started an all-AI table with nobody connected and expected a finished match. They now say who is watching, which is what the real server asserts a beat after START. One of them, "hands the seat to the AI once its owner disconnects," was only ever passing because its single player *was* the whole table; it now seats a second player, so it tests what its name claims.
+
+Suite: **336 across 26 files**, full workspace typecheck clean.
+
+## 18. The session belonged to the browser; it should have belonged to the tab (2026-08-28)
+
+### The problem
+
+A tab was closed and reopened during two-account playtesting, and the app came back **signed in as the other player** — no sign-in screen, no prompt, a live seat at a table. Clearing `localStorage` fixed it on the spot.
+
+That fix was the misleading part. Every function in the path was correct, and the whole path was audited to confirm it: tokens are `randomBytes(32)`, `login()` holds no shared state, the Mongo session lookup is filtered by `_id`, `SessionCache` is keyed by the full token, the socket reconnect has no stale-token closure, and exactly one place in the frontend writes the key. A probe against the running server confirmed two registrations get two distinct tokens, each resolving to its own account. Nothing was broken.
+
+### What was actually wrong
+
+The session was a **browser-wide singleton**, and three individually-reasonable properties of `localStorage` composed into the defect: it is scoped to the origin rather than the tab, it holds exactly one value per key, and it never expires on its own — while the token inside it lives 7 days with sliding renewal. A token written days ago by someone else was therefore still valid, still present, and restored on open with **nothing indicating whose it was**.
+
+The restore path did precisely what it was designed to do. It asked the server "who does this token belong to", got an honest answer, and adopted that identity. It was never asked the question that mattered — *is this who I meant to be?* — because the design had no way to represent that question.
+
+The same singleton made two accounts in one browser impossible, which is what pushed testing onto two browsers, which is what produced a bug report containing a detail that cannot happen (*"the token is the same in Brave and Chrome"*). That detail was not a false report. It was **a consequence of the design being unobservable**: when identity is restored silently, a user cannot see which session they are in, so they describe the symptom rather than the state.
+
+### The decision
+
+**The tab owns the session; persistence past the tab is something the player asks for.** `sessionStorage` is authoritative and per-tab. `localStorage` becomes opt-in persistence only, behind a *"Keep me signed in on this browser"* checkbox, consulted solely to seed a tab that has no session of its own.
+
+Two details carry the design and neither is obvious:
+
+- **Adopt-on-read.** A tab seeded from the persisted slot immediately copies the token into its own `sessionStorage`. Without that write the tab keeps re-reading the shared slot, another tab's sign-in moves it underneath, and the singleton returns through the back door. The adopt is what pins a tab to an identity.
+- **Not persisting *clears* the shared slot.** The gentler alternative — don't touch what you weren't asked to touch — reinstates the original bug in full: sign in as A with the box ticked, later as B without it, and the next cold start silently restores A. One slot, one token, so the rule is that the persisted slot always reflects the most recent sign-in's intent, filled by it or emptied by it. The cost is that signing in without the box forgets a remembered account, which is a fair reading of "don't keep me signed in".
+
+Reset-password deliberately does not persist (`handleAuthenticated(result, persist = false)`): a reset is what you do when the account may be compromised, possibly on a machine you do not own.
+
+The cookie question is untouched — the token is still a bearer token in Web Storage, still authenticated over the socket by first message, and no `Set-Cookie` exists anywhere. `SESSION_TRANSPORT.md` §3.1 had listed the storage options in a three-row table and moved on, because that choice was orthogonal to the cookie decision it was arguing. This is that table's missing argument, and it now has a "shared between tabs" column pointing at it.
+
+### Scope, stated honestly
+
+This does nothing for the XSS exposure of Web Storage. `sessionStorage` is exactly as readable by injected script as `localStorage`; the gain is only that a token which dies with the tab cannot be exfiltrated tomorrow. It shortens the window, it does not close it. The §8 gap in `SESSION_TRANSPORT.md` — a socket outliving a `logout-all` because `AUTHENTICATE` happens once — is likewise unaffected.
+
+A latent bug got fixed on the way past: storage access is now wrapped, so a browser that *throws* on Web Storage (Safari private browsing, blocked site data, enterprise policy) degrades to a page-lifetime session instead of white-screening at module load.
+
+### Testing
+
+The frontend workspace has no test suite, so the seven scenarios — including the two that regressed — are a scenario script (`scratchpad/storage-sim.mjs`, session-local) modelling the storage rules against fake `Storage` objects. It validates the design rather than the shipped bytes, and says so in its header. If this area grows a third tier it should be promoted to a real test.
+
+Full write-up, behaviour matrix, and the "mistakes worth not repeating" list: **`SESSION_PERSISTENCE.md`**.
+
+## 19. The AI game designer — authoring a plugin from a description (2026-08-28)
+
+Until now, adding a game meant writing a `rules.json` by hand. That is a real
+barrier: the DSL is not hard, but it is *unfamiliar*, and the failure mode of an
+unfamiliar schema is a document that loads and plays the wrong game. This section
+records why the feature that removes that barrier is shaped the way it is —
+`GAME_DESIGNER.md` is the mechanics, this is the reasoning.
+
+### The design constraint: authoring cannot use the zero-hallucination pattern
+
+Everything else in this project that touches an LLM is protected the same way —
+the engine produces a bounded set, the model picks a member, and anything else
+becomes `legal_moves[0]`. That pattern is unavailable here: a `rules.json` is not
+a choice from a list, and there is no known-good document to fall back to.
+
+So the guarantee was rebuilt from the other direction, and the decision carrying
+most of the weight is **the engine plays every draft before a human sees it**.
+`validateRulesDsl` alone was never going to be enough — it answers "is this
+well-formed", which is the right question for a file a person wrote and can
+debug. A model fails differently: it produces documents that satisfy every field
+constraint and still deadlock. The clearest case is `CARD_EXCHANGE`, a declarable
+`PhaseKind` that `generateLegalMoves` has no implementation for. A draft using it
+passes validation cleanly and then hangs the moment a real hand reaches it.
+
+`draft-validator.ts` therefore runs the same `createMatch` → `generateLegalMoves`
+→ `applyMove` → `applyHandScoring` loop the WebSocket server runs, at every table
+size the plugin claims, over two hands, on fixed seeds. This is not a new idea in
+this repo — `game-library.test.ts` already holds the shipped plugin catalog to
+exactly that bar. The designer's output gets no weaker a guarantee than the games
+we ship.
+
+**Alternative rejected:** returning drafts with a "may not work" disclaimer and
+letting the author find out by playing. That moves the cost from a 200ms
+simulation to a wasted evening, and would have made the feature a demo.
+
+### Telling the model what it *cannot* do
+
+The second decision, and the one that most improves output quality:
+`DSL_LIMITATIONS` enumerates what the DSL cannot express, sourced from `TODO.md`.
+The reason is that **an unknown field is ignored, not rejected** — so a
+hallucinated `"mustBeatHighest": true` yields a draft that validates, plays, and
+is quietly not the game that was asked for. That is strictly worse than an error.
+
+The instruction is: produce the closest faithful simplification, and say what you
+dropped in `notes`. Asked for full Hearts (which needs card passing and
+first-trick restrictions, neither expressible), it returns a playable Hearts using
+`penalty-points` + `lowerIsBetter` + `moonShot` + `suitPointValues` +
+`cardPointValues` + `lockedLeadSuits` — every right primitive — with the two
+omissions stated. Honest beats complete.
+
+**Consequence to maintain:** `dsl-reference.ts` is now a second place the DSL is
+written down, and a second place it can rot. `dsl-reference.test.ts` reads
+`shared/src/rules-schema.ts` **as text**, extracts each union's members, and
+asserts every one appears in the reference — so adding a primitive and forgetting
+to teach the designer about it fails the suite, rather than shipping a designer
+that can never produce it. That failure would otherwise look, from the outside,
+like a model that just is not very good.
+
+### Repair as the main quality mechanism
+
+A failing draft is sent back with the engine's own error strings, up to two
+attempts. This is where most of the quality comes from: a model handed `no legal
+move exists in phase "EXCHANGE" (kind CARD_EXCHANGE) for seat 0` fixes it nearly
+every time, and would never have found it unaided. It is also why the validator's
+messages are written to be actionable rather than terse — they are prompt input,
+not just log output.
+
+Out of attempts, the draft is **returned anyway with its diagnostics attached**.
+An author who can see what is broken can fix the one field by hand; an author who
+gets an error and an empty editor cannot do anything at all.
+
+### Publishing reuses the plugin gate, deliberately
+
+`DesignService` never writes to `PluginRepository`. Publishing calls
+`PluginManager.importPlugin` / `updatePlugin` — the same call an uploaded file
+makes. The temptation was a direct write (fewer moving parts, and the draft has
+already been validated twice); it was rejected because the value of §14's "one
+identity-assignment path" and §11's ownership rules is that there is exactly one
+of each. An LLM does not get its own door into the catalog.
+
+First publish imports; every publish after updates the same game, so iterating a
+design does not litter the lobby. Deleting a session never deletes a game
+published from it — deleting your notes should not delete the thing you made.
+
+### Revisions are append-only
+
+Reverting to revision 2 appends the old draft as revision 5 rather than
+truncating. Undo that destroys what it undoes is only useful once; this way an
+author can revert to 2, decide they preferred 5, and revert again. Revision
+numbers are stable identifiers, so trimming past the 40-revision cap drops the
+oldest and keeps counting rather than renumbering — otherwise "revert to 3"
+silently changes meaning.
+
+### Context discipline, forced by a real constraint
+
+Groq charges `max_tokens` against the tokens-per-minute budget **up front**,
+whether or not the reply uses it. On a free-tier 8000 TPM key that makes prompt
+size and reply ceiling one shared budget, and the first live refine was refused
+with a 413 before generating anything (`PROBLEMS.md`). The fixes were all things
+that turned out to be better prompting anyway:
+
+- On a refine, drop the worked example — the model's own current draft is a
+  better and more relevant example than Callbreak.
+- **Carry `strategy.md` forward instead of round-tripping it.** It is neither
+  sent nor requested unless the instruction is actually about the guide. Saves
+  ~1400 tokens each way *and* removes a failure mode: a rules tweak can no longer
+  quietly rewrite a strategy guide the author was happy with.
+
+That second one is the example worth remembering — the token constraint pointed
+at a correctness improvement, not just a cheaper prompt.
+
+### Provider layer: a second interface rather than a wider one
+
+`LLMProvider.decide` was left alone and `LLMCompletionProvider.complete` added
+beside it. `decide` is the hot path: once per AI seat per turn, under a per-level
+timeout, ~500 tokens, with a deterministic fallback. Authoring is the opposite on
+all four counts. Widening `decide` to cover both would have put an
+authoring-sized token budget one typo away from the game loop. `GroqProvider` and
+`GeminiProvider` implement both and share their transport internally, so key
+rotation and retry classification still exist exactly once.
+
+### Testing
+
+63 tests across four files, all offline against a scripted provider — the
+behaviour worth pinning down is what happens when the model returns something
+*wrong*, and a live model cannot be asked to be wrong on cue. The scripted
+responses are the shapes real models actually produce: a markdown fence, a chatty
+preamble, a reply truncated mid-object, braces inside the strategy string, a
+`gameId` emitted despite instructions, a draft that validates and deadlocks.
+
+Then verified live against a real Groq key: a 4-player partnership game drafted
+valid and playable first try in 7.3s with zero repairs; a refine adding bidding
+produced the correct `bid-multiplier` formula and `BIDDING` phase in 5.5s with
+the guide carried forward untouched; Hearts came back playable with honest notes;
+publish, republish-in-place, cross-user 404 isolation and the rate limiter firing
+at exactly six requests all behaved as specified.
+
+Suite: **399 across 30 files**, full workspace typecheck and build clean.
+
+## 21. Security Documentation & Hardening (2026-08-28)
+
+### Why this happened
+The security posture of the project was dispersed across `AUTH.md`, `DEPLOYMENT.md`, and `PROJECT_JOURNAL.md`. Additionally, a few vulnerabilities were flagged (clear-text Redis credentials, XSS exposure via `localStorage`, rate-limit spoofing) that needed proactive fixes before any real-world deployment.
+
+### What changed
+- **Created `SECURITY.md`:** A central repository file summarizing the threat model, what is explicitly covered (and what is deliberately omitted, like 2FA), and pending action items like credential rotation.
+- **Enforced `rediss://` in `.env.example`:** Changed the default and added strong comments to warn against using unencrypted `redis://` in production, which would leak session tokens in clear text.
+- **Added CSP to static file serving:** Injected a strict `Content-Security-Policy` into `backend/src/http/static-files.ts`. Since the app uses `localStorage` for session tokens (which mitigates CSRF but exposes them to XSS), a strong CSP is the critical defense-in-depth against XSS.
+- **Documented `TRUST_PROXY`:** Added `TRUST_PROXY="false"` to `.env.example` with a warning that setting it to true without a real proxy allows clients to spoof `X-Forwarded-For` and bypass the per-IP rate limits.
+
+## 22. How to keep this doc useful
 
 Update this file (not just memory) whenever you: add a new reference plugin, change a provider, flip a major architectural decision (e.g. finally standing up Redis for real, moving to JWT, adding OAuth), or close one of the outstanding action items above. The value of this document is entirely in the "why," which git history and code comments don't capture on their own — a diff shows *what* changed, this file is where *why* lives.

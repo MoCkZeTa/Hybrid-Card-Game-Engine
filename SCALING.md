@@ -1,5 +1,7 @@
 # Running this thing for real
 
+> Implementation-level companion: `REDIS.md` documents each Redis use individually — data structures, the Lua scripts, and the degradation behaviour of each — where this file covers the design as a whole.
+
 Notes on the realtime layer: what protects it, what Redis is for, and what to
 set when you move off one laptop.
 
@@ -63,15 +65,28 @@ and the owner drops anything from a node it has not heard from in
 a table.
 
 If every seat's owner is gone at once — not just one seat falling to AI, but
-nobody connected to the match at all — the turn loop keeps that fact on a
-clock instead of playing the match out unattended: an empty table never has a
-human seat to block on, so left alone it would run AI vs AI to the end of the
-match by itself. Once the empty stretch outlasts `noHumanTimeoutMs` (default
-120s — long enough to survive a refresh or a flaky reconnect), the loop stops
-advancing the match and the owning node releases it immediately, with no
-result-screen grace period, since there is nobody to show one to. A human
-reconnecting at any point before that resets the clock and the match picks up
-right where it left off.
+nobody connected to the match at all, watchers included — the turn loop
+**stops where it stands**. An empty table never has a human seat to block on,
+so left alone it would run AI vs AI to the end of the match by itself, on
+moves no player chose and no player saw. Instead the position freezes exactly
+as the last person to leave saw it, and a clock starts.
+
+Reconnect inside `noHumanTimeoutMs` (default 120s — long enough to survive a
+refresh, a tunnel drop, or a phone changing networks) and the clock is
+cancelled: the match resumes from the frozen position. Miss it and the match
+is **terminated**: the owning node releases the lease, drops the match from
+memory, and deletes its durable snapshot — the last step being the one that
+makes it permanent, since a surviving snapshot is exactly what `recover()`
+would use to start the table up again. There is no result-screen grace period,
+unlike a match that finished normally, because there is nobody to show one to.
+A player who comes back after that gets `MATCH_NOT_FOUND` and lands in the
+lobby.
+
+Watchers count as presence, not just seated players: `ENTER_ROOM` registers a
+socket the same way `JOIN` does, and START pushes this node's presence to the
+owner immediately rather than on the next tick. Without both, the host who
+starts an all-AI table and never sits down would look like nobody at all, and
+the match would freeze the instant it began.
 
 ## Game plugins across nodes
 
@@ -93,6 +108,18 @@ cache hit or miss. Joining an already-created match by its `matchId` needs
 none of this — the owning node already holds that match's plugin reference —
 which is what lets a friend join and play via a shared match code without any
 plugin visibility of their own. See `PROJECT_JOURNAL.md` §11.
+
+**AI game designer sessions are the same story, and nothing more.** A design
+session (`GET/POST /api/design/sessions`, `GAME_DESIGNER.md`) is user data with
+no live component: it holds a conversation and its drafts, owns no lease, runs
+no timer, and is read and written one request at a time. So it needs the
+ordinary durable-storage treatment and none of the ownership machinery —
+`DesignSessionRepository` follows the same `InMemory*`/`Mongo*` pair as
+everything above, indexed on `{ ownerUserId, updatedAt }`, and any node can
+serve any request for any session. The one cluster-relevant detail is that
+**publishing goes through `PluginManager`**, so a game drafted on one node
+reaches every other node by exactly the path an imported plugin does — there is
+no second synchronization story to reason about.
 
 ## What the socket layer defends against
 
