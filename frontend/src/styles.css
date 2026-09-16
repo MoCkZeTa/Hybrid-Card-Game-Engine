@@ -434,6 +434,43 @@ select:focus,
   color: var(--text-faint);
 }
 
+/* Opt-in session persistence. Overrides the stacked-uppercase treatment every
+   other `.auth-form label` gets — this one is a sentence the player reads and
+   decides on, not a field caption. */
+.auth-form label.auth-remember {
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 0.6rem;
+  cursor: pointer;
+  margin-top: -0.25rem;
+}
+
+.auth-remember input {
+  flex: none;
+  width: 1rem;
+  height: 1rem;
+  margin-top: 0.1rem;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.auth-form label.auth-remember span {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  font-size: 0.84rem;
+  font-weight: 700;
+  letter-spacing: normal;
+  text-transform: none;
+  color: var(--text-dim);
+}
+
+.auth-remember small {
+  font-size: 0.74rem;
+  font-weight: 600;
+  color: var(--text-faint);
+}
+
 .auth-error {
   background: var(--danger-soft);
   border: 2px solid var(--danger);
@@ -533,10 +570,25 @@ select:focus,
   gap: 0.75rem;
 }
 
+/* Doubles as the account-settings trigger, so it is a button now. Kept looking
+   like the label it was — a second loud control next to "Sign out" would draw
+   attention away from the game list, which is what the lobby is for. */
 .app-bar-user {
+  appearance: none;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  font-family: inherit;
   color: var(--text-dim);
   font-size: 0.88rem;
   font-weight: 700;
+  border-bottom: 1px dashed transparent;
+}
+
+.app-bar-user:hover {
+  color: var(--text);
+  border-bottom-color: var(--border);
 }
 
 .conn-dot {
@@ -1640,4 +1692,76 @@ select:focus,
   .link-banner-reconnecting .link-dot {
     animation: none;
   }
+}
+
+
+/* ---------- Auth: reset flow and account panel ---------------------------- */
+
+/* The forgot/reset screens carry their own heading, where the sign-in screen
+   uses the tab strip instead. */
+.auth-heading {
+  font-size: 1.25rem;
+  font-weight: 800;
+  margin-bottom: 0.5rem;
+}
+
+.auth-lede {
+  color: var(--text-dim);
+  font-size: 0.88rem;
+  line-height: 1.55;
+  margin: 0 0 0.4rem;
+}
+
+/* A text link that is really a button — the reset flow is in-page, so an <a>
+   with no href would be a lie to a screen reader. */
+.auth-link {
+  appearance: none;
+  background: none;
+  border: none;
+  padding: 0.2rem;
+  margin-top: 0.1rem;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 0.84rem;
+  font-weight: 700;
+  color: var(--text-faint);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  align-self: center;
+}
+
+.auth-link:hover {
+  color: var(--accent);
+}
+
+/* The account panel holds a three-field form plus the session controls; the
+   390px confirm-dialog width is too tight for that. */
+.modal-wide {
+  max-width: 460px;
+}
+
+.account-identity {
+  color: var(--text-dim);
+  font-size: 0.88rem;
+  margin: 0 0 1rem;
+}
+
+.account-sessions {
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+  padding: 0.85rem;
+  margin-bottom: 1.1rem;
+  background: var(--panel-2);
+  border: 2px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  font-size: 0.84rem;
+  color: var(--text-dim);
+  line-height: 1.5;
+}
+
+.account-session-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
 }

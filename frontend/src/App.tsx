@@ -1,13 +1,30 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { AuthSuccess, AuthUser, BotLevel } from '@hcg/shared';
-import { clearToken, fetchMe, getStoredToken, logout, storeToken } from './api';
+import { WS_URL, clearToken, fetchMe, getStoredToken, logout, storeToken } from './api';
 import { useGameConnection } from './useGameConnection';
 import { AuthScreen } from './components/AuthScreen';
 import { Lobby } from './components/Lobby';
 import { Room } from './components/Room';
 import { GameTable } from './components/GameTable';
+import { ResetPassword } from './components/ResetPassword';
+import { AccountPanel } from './components/AccountPanel';
 
-const WS_URL = import.meta.env.VITE_WS_URL ?? 'ws://localhost:3001';
+/**
+ * The only client-side route in the app.
+ *
+ * A password-reset email links here cold, so this path has to resolve before
+ * anything else runs — including the signed-in check, since not being able to
+ * sign in is the entire reason someone follows that link. Vite's dev server and
+ * `static-files.ts` in production both fall back to index.html for it.
+ *
+ * Read once at module load rather than on every render: nothing here navigates,
+ * and `handleResetDone` rewrites the URL with `replaceState` precisely so a
+ * spent token cannot be replayed by a refresh.
+ */
+const RESET_PATH = '/reset-password';
+const initialPath = window.location.pathname;
+const initialResetToken = new URLSearchParams(window.location.search).get('token') ?? '';
+
 
 export default function App(): JSX.Element {
   const [token, setToken] = useState<string | null>(() => getStoredToken());
@@ -16,6 +33,10 @@ export default function App(): JSX.Element {
   // Explains an involuntary return to the sign-in screen. Only set when the
   // session died under the player — never when they signed out themselves.
   const [signInNotice, setSignInNotice] = useState<string | null>(null);
+  const [showAccount, setShowAccount] = useState(false);
+  // Left once the reset screen is finished with, so the app renders normally
+  // without a full page load.
+  const [onResetRoute, setOnResetRoute] = useState(initialPath === RESET_PATH);
   // Which matchId we've already sent ENTER_ROOM/JOIN for, so the auto-enter
   // effect below doesn't refire on every unrelated re-render.
   const enteredRef = useRef<string | null>(null);
@@ -50,8 +71,13 @@ export default function App(): JSX.Element {
     };
   }, []);
 
-  const handleAuthenticated = useCallback((result: AuthSuccess) => {
-    storeToken(result.token);
+  // `persist` is the sign-in form's "Keep me signed in" box. Defaulting it to
+  // false matters for the callers that don't pass it — `ResetPassword` signs
+  // you in straight after a reset, and a password reset is what you do when the
+  // account may be compromised, so quietly persisting that session to the
+  // browser is the wrong default.
+  const handleAuthenticated = useCallback((result: AuthSuccess, persist = false) => {
+    storeToken(result.token, persist);
     setToken(result.token);
     setUser(result.user);
     setSignInNotice(null);
@@ -76,6 +102,25 @@ export default function App(): JSX.Element {
     setToken(null);
     setUser(null);
     setSignInNotice(null);
+    enteredRef.current = null;
+  }, []);
+
+  const handleResetDone = useCallback(() => {
+    // Strip the token from the address bar. It is single-use and already spent
+    // on success; on cancel it should not sit in history either.
+    window.history.replaceState({}, '', '/');
+    setOnResetRoute(false);
+  }, []);
+
+  // Ending every session on purpose — the account panel's "sign out
+  // everywhere". Same teardown as a normal sign-out, minus the logout call the
+  // server has already performed.
+  const handleSessionEnded = useCallback(() => {
+    setShowAccount(false);
+    clearToken();
+    setToken(null);
+    setUser(null);
+    setSignInNotice('Signed out on all devices. Please sign in again.');
     enteredRef.current = null;
   }, []);
 
@@ -128,6 +173,12 @@ export default function App(): JSX.Element {
       conn.enterRoom(conn.matchId);
     }
   }, [conn, conn.matchId, conn.room, conn.state]);
+
+  if (onResetRoute) {
+    return (
+      <ResetPassword token={initialResetToken} onAuthenticated={handleAuthenticated} onDone={handleResetDone} />
+    );
+  }
 
   if (restoring) {
     return (
@@ -203,7 +254,17 @@ export default function App(): JSX.Element {
           onCreate={handleCreate}
           onEnterRoom={handleEnterRoom}
           onSignOut={handleSignOut}
+          onOpenAccount={() => setShowAccount(true)}
           onRefreshGames={conn.refreshGames}
+        />
+      )}
+
+      {showAccount && (
+        <AccountPanel
+          user={user}
+          token={token}
+          onClose={() => setShowAccount(false)}
+          onSessionEnded={handleSessionEnded}
         />
       )}
     </div>

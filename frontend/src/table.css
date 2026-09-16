@@ -947,3 +947,295 @@
     margin-left: 0;
   }
 }
+
+/* ---------- AI game designer --------------------------------------------- */
+/* Shares the plugin-import panel's vocabulary (.import-toggle, .import-head,
+   .import-error) so the two ways of adding a game read as one feature with two
+   doors, rather than two features that happen to sit next to each other. */
+
+.designer-panel {
+  gap: 1rem;
+}
+
+.designer-head-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.designer-examples {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.designer-example {
+  font: inherit;
+  font-size: 0.78rem;
+  cursor: pointer;
+  color: var(--text-dim);
+  background: var(--panel-2);
+  border: 2px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 0.35rem 0.7rem;
+}
+
+.designer-example:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.designer-example:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* ---- Saved designs ---- */
+
+.designer-sessions {
+  border-top: 2px solid var(--border-soft);
+  padding-top: 0.9rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.designer-sessions h4 {
+  margin: 0 0 0.2rem;
+  font-size: 0.82rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-faint);
+}
+
+.designer-session-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  background: var(--panel-2);
+  border: 2px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+}
+
+.designer-session-row:hover {
+  border-color: var(--accent-line);
+}
+
+.designer-session-hit {
+  flex: 1;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  background: none;
+  border: 0;
+  padding: 0.6rem 0.8rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.designer-session-name {
+  font-weight: 700;
+  font-size: 0.9rem;
+}
+
+/* ---- Transcript ---- */
+
+.designer-transcript {
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+  max-height: 26rem;
+  overflow-y: auto;
+  padding-right: 0.3rem;
+}
+
+.designer-turn {
+  border-left: 3px solid var(--border);
+  padding: 0 0 0 0.8rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.designer-turn-current {
+  border-left-color: var(--accent);
+}
+
+.designer-ask {
+  margin: 0;
+  font-size: 0.88rem;
+  color: var(--text-dim);
+  font-style: italic;
+}
+
+.designer-turn-head {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.designer-rev {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--text-faint);
+}
+
+.designer-summary {
+  flex: 1;
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.designer-revert {
+  font-size: 0.75rem;
+  padding: 0.2rem 0.5rem;
+}
+
+.designer-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.designer-badge {
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 0.15rem 0.45rem;
+  border-radius: var(--radius-sm);
+  border: 2px solid var(--border);
+  color: var(--text-faint);
+}
+
+.designer-badge-ok {
+  border-color: var(--success);
+  color: var(--success);
+  background: var(--success-soft);
+}
+
+.designer-badge-bad {
+  border-color: var(--danger);
+  color: var(--danger);
+  background: var(--danger-soft);
+}
+
+.designer-badge-warn {
+  border-color: var(--warn);
+  color: var(--warn);
+}
+
+.designer-notes,
+.designer-diagnostics {
+  margin: 0;
+  padding-left: 1.1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.82rem;
+  color: var(--text-dim);
+}
+
+.designer-diag-error {
+  color: var(--danger);
+}
+
+.designer-diag-warning {
+  color: var(--warn);
+}
+
+/* ---- Draft editor ---- */
+
+.designer-draft {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  border: 2px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.7rem;
+  background: var(--panel-2);
+}
+
+.designer-tabs {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.designer-tab {
+  font: inherit;
+  font-family: var(--font-mono);
+  font-size: 0.76rem;
+  cursor: pointer;
+  color: var(--text-faint);
+  background: none;
+  border: 2px solid transparent;
+  border-radius: var(--radius-sm);
+  padding: 0.25rem 0.6rem;
+}
+
+.designer-tab-on {
+  color: var(--text);
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.designer-dirty {
+  margin-left: auto;
+  font-size: 0.72rem;
+  color: var(--warn);
+  font-weight: 700;
+}
+
+.designer-code {
+  font-family: var(--font-mono);
+  font-size: 0.76rem;
+  line-height: 1.5;
+  padding: 0.7rem;
+  border-radius: var(--radius-sm);
+  border: 2px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  resize: vertical;
+  width: 100%;
+}
+
+.designer-code:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.designer-draft-foot {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 0.8rem;
+}
+
+.designer-draft-foot .field-hint {
+  flex: 1;
+  margin: 0;
+}
+
+.designer-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+}
+
+@media (max-width: 720px) {
+  .designer-transcript {
+    max-height: 20rem;
+  }
+
+  .designer-draft-foot {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .designer-actions .btn {
+    flex: 1;
+  }
+}

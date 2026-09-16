@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { AuthUser, GameSummary } from '@hcg/shared';
 import { deletePlugin, fetchPluginSource, type PluginSource } from '../api';
 import { ImportPlugin } from './ImportPlugin';
+import { GameDesigner } from './GameDesigner';
 
 /** Whether opening the plugin panel saves over the original or beside it. */
 type EditIntent = 'edit' | 'copy';
@@ -19,6 +20,7 @@ export function Lobby({
   onCreate,
   onEnterRoom,
   onSignOut,
+  onOpenAccount,
   onRefreshGames,
 }: {
   games: readonly GameSummary[];
@@ -28,6 +30,7 @@ export function Lobby({
   onCreate: (gameId: string, playerCount: number, maxHands: number) => void;
   onEnterRoom: (matchId: string) => void;
   onSignOut: () => void;
+  onOpenAccount: () => void;
   onRefreshGames: () => void;
 }): JSX.Element {
   const [selectedGame, setSelectedGame] = useState<string | null>(null);
@@ -96,7 +99,9 @@ export function Lobby({
         </div>
         <div className="app-bar-right">
           <span className={connected ? 'conn-dot conn-on' : 'conn-dot conn-off'} />
-          <span className="app-bar-user">{user.displayName}</span>
+          <button className="app-bar-user" onClick={onOpenAccount} title="Account settings">
+            {user.displayName}
+          </button>
           <button className="btn btn-ghost" onClick={onSignOut}>
             Sign out
           </button>
@@ -332,6 +337,10 @@ export function Lobby({
 
           <div className="lobby-col-tail" ref={importPanelRef}>
             <h2 className="section-title">Add a game</h2>
+            {/* Designer first: describing a game is the lower-effort path in,
+                and it renders nothing at all on a server with no LLM key, so
+                the import panel stays the top control there. */}
+            <GameDesigner token={token} onPublished={onRefreshGames} />
             {/* The key carries the intent as well as the id: the panel seeds
                 its form state from these props once, so copying a plugin you
                 already have open for editing has to remount it to re-seed. */}

@@ -266,10 +266,12 @@ export function useGameConnection(wsUrl: string, token: string | null): GameConn
           case 'STATE_UPDATE':
             setRoom(null);
             setState(msg.state);
-            // Once the match is live the server is the authority on which seat
-            // is ours, so resume from that rather than what we asked for.
-            if (msg.state.viewerSeat !== 'SPECTATOR') {
-              resumeRef.current = { matchId: matchIdRef.current!, seat: msg.state.viewerSeat };
+            // Only write resumeRef while we are still in this match — a
+            // STATE_UPDATE fan-out that arrives *after* leaveMatch has
+            // cleared matchIdRef would otherwise store { matchId: null },
+            // breaking the next reconnect-resume.
+            if (msg.state.viewerSeat !== 'SPECTATOR' && matchIdRef.current !== null) {
+              resumeRef.current = { matchId: matchIdRef.current, seat: msg.state.viewerSeat };
             }
             break;
           case 'ERROR':
@@ -285,6 +287,18 @@ export function useGameConnection(wsUrl: string, token: string | null): GameConn
             if (msg.code === 'UNAUTHENTICATED') {
               console.warn(`[ws] authentication rejected: ${msg.message}`);
               break;
+            }
+            // The match we are sitting in is gone — it finished long enough
+            // ago to be retired, or everyone left it and the server ended it.
+            // Nothing we send about it can succeed, so drop it rather than
+            // leave a dead table on screen re-joining itself on every
+            // reconnect. The toast still explains what happened.
+            if (msg.code === 'MATCH_NOT_FOUND' && matchIdRef.current !== null) {
+              matchIdRef.current = null;
+              resumeRef.current = null;
+              setMatchId(null);
+              setRoom(null);
+              setState(null);
             }
             if (msg.code !== 'RATE_LIMITED') setLastError(msg);
             break;
@@ -434,6 +448,16 @@ export function useGameConnection(wsUrl: string, token: string | null): GameConn
   const clearError = useCallback(() => setLastError(null), []);
 
   const leaveMatch = useCallback(() => {
+    const id = matchIdRef.current;
+    // Tell the server first so it can report the disconnect and start the
+    // abandoned-match countdown if this was the last watcher. Do this before
+    // clearing matchIdRef so the guard in the STATE_UPDATE handler above
+    // doesn't race the message.
+    if (id && wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(
+        JSON.stringify({ type: 'LEAVE_MATCH', matchId: id } satisfies ClientMessage),
+      );
+    }
     matchIdRef.current = null;
     resumeRef.current = null;
     setMatchId(null);
