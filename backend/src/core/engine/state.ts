@@ -143,6 +143,7 @@ export function createMatch(opts: CreateMatchOptions): GameState {
     players,
     currentTrick: [],
     lastTrick: null,
+    completedTricks: [],
     leadSuit: null,
     kitty: [],
     teamScores,
@@ -265,6 +266,8 @@ function dealHand(
     })),
     currentTrick: [],
     lastTrick: null,
+    // Reset every deal: history is per-hand, like tricksWon and handPoints.
+    completedTricks: [],
     leadSuit: null,
     kitty,
     brokenSuits: [],

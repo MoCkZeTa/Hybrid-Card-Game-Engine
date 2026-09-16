@@ -33,7 +33,26 @@ export interface RedisBundle {
   readonly subscriber: Redis;
   /** Key prefix applied by every component, so one Redis can host several environments. */
   readonly keyPrefix: string;
+  /**
+   * Live connection state, for the readiness probe.
+   *
+   * Reporting "Redis: yes" because the *boot* succeeded is a lie with a long
+   * tail: if Redis dies at 3am, a probe built on that answer keeps returning
+   * 200 and the load balancer keeps sending traffic to a node that can no
+   * longer see the rest of the cluster. This reads ioredis's current status
+   * instead, which is a property, not a round trip — cheap enough to call on
+   * every probe.
+   */
+  health(): RedisHealth;
   close(): Promise<void>;
+}
+
+export interface RedisHealth {
+  /** True only when every connection is usable. Pub/sub matters as much as commands. */
+  readonly healthy: boolean;
+  readonly commands: string;
+  readonly publisher: string;
+  readonly subscriber: string;
 }
 
 export interface RedisConfig {
@@ -142,6 +161,16 @@ export async function createRedisBundle(config: RedisConfig): Promise<RedisBundl
     publisher,
     subscriber,
     keyPrefix: config.keyPrefix ?? 'hcg',
+    health(): RedisHealth {
+      // ioredis statuses: connecting | connect | ready | close | reconnecting | end.
+      // Only 'ready' can actually serve a command.
+      return {
+        healthy: commands.status === 'ready' && publisher.status === 'ready' && subscriber.status === 'ready',
+        commands: commands.status,
+        publisher: publisher.status,
+        subscriber: subscriber.status,
+      };
+    },
     async close(): Promise<void> {
       // `quit` flushes in-flight commands; `disconnect` after a short grace
       // period covers a Redis that has stopped answering entirely.

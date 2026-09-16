@@ -19,6 +19,13 @@ export interface DecideTurnOptions {
   readonly provider: LLMProvider;
   /** PRD 6: LLM Inference Request budget. Default 1200ms. */
   readonly llmTimeoutMs?: number;
+  /**
+   * Fraction of the hand's completed tricks this seat's bot is shown, 0..1.
+   * Default 1 (full history). Travels from `BotTier` alongside `llmTimeoutMs`
+   * because both are difficulty settings and both apply here — one bounds how
+   * long the model may think, the other how much of the hand it remembers.
+   */
+  readonly memoryFraction?: number;
 }
 
 /**
@@ -29,7 +36,7 @@ export interface DecideTurnOptions {
  * so the game loop can never stall on a flaky external API call.
  */
 export async function decideTurn(opts: DecideTurnOptions): Promise<Decision> {
-  const { rules, plugin, state, seat, provider, llmTimeoutMs = 1200 } = opts;
+  const { rules, plugin, state, seat, provider, llmTimeoutMs = 1200, memoryFraction } = opts;
 
   if (state.turnSeat !== seat) {
     throw new Error(`decideTurn called for seat ${seat} but it is seat ${state.turnSeat}'s turn`);
@@ -46,7 +53,7 @@ export async function decideTurn(opts: DecideTurnOptions): Promise<Decision> {
 
   const legalIds = new Set(masked.legalMoves.map((m) => m.id));
   const fallbackId = masked.legalMoves[0]!.id;
-  const { systemPrompt, userPrompt } = compilePrompt(plugin, masked);
+  const { systemPrompt, userPrompt } = compilePrompt(plugin, masked, { memoryFraction });
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), llmTimeoutMs);

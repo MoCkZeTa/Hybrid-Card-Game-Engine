@@ -104,6 +104,11 @@ export function maskGameState(
     players: state.players.map((p) => maskPlayer(rules, state.phase, p, viewer, state.players.length)),
     currentTrick: state.currentTrick,
     lastTrick: state.lastTrick,
+    // Unmasked on purpose: every card here was played face up. Difficulty-based
+    // trimming for AI seats happens in `compilePrompt`, downstream of this —
+    // masking answers "what may this viewer see", not "how much does this
+    // particular bot bother to use".
+    completedTricks: state.completedTricks,
     leadSuit: state.leadSuit,
     kittyCount: state.kitty.length,
     teamScores: state.teamScores,

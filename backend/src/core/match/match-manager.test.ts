@@ -15,6 +15,10 @@ const HOST = 'user-host';
 const USER_A = 'user-a';
 const USER_B = 'user-b';
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 /** Always plays the first legal move — deterministic, no network calls. */
 class AlwaysFirstMoveProvider implements LLMProvider {
   readonly name = 'always-first';
@@ -47,12 +51,16 @@ class DelayedProvider implements LLMProvider {
 }
 
 /** Same provider/timeout for all four levels — the common case where a test doesn't care about tiering. */
-function allTiers(provider: LLMProvider, llmTimeoutMs = 1000): Record<BotLevel, BotTier> {
+function allTiers(
+  provider: LLMProvider,
+  llmTimeoutMs = 1000,
+  memoryFraction = 1,
+): Record<BotLevel, BotTier> {
   return {
-    easy: { provider, llmTimeoutMs },
-    medium: { provider, llmTimeoutMs },
-    hard: { provider, llmTimeoutMs },
-    extreme: { provider, llmTimeoutMs },
+    easy: { provider, llmTimeoutMs, memoryFraction },
+    medium: { provider, llmTimeoutMs, memoryFraction },
+    hard: { provider, llmTimeoutMs, memoryFraction },
+    extreme: { provider, llmTimeoutMs, memoryFraction },
   };
 }
 
@@ -95,7 +103,19 @@ async function quickStart(
     connectedSeats.set(opts.humanSeat, { userId, token: `conn-${userId}`, nodeId: 'test-node' });
   }
   await manager.startMatch(matchId, HOST, connectedSeats, opts.botLevel);
+  if (opts.humanSeat === undefined) await watchAsHost(manager, matchId);
   return matchId;
+}
+
+/**
+ * Puts the host at the table as a seatless watcher and lets the turn loop
+ * run — what the WebSocket layer does via `syncPresenceNow` right after START.
+ * An all-AI table needs it: with nobody connected at all the loop stops, so a
+ * test that wants the match played out has to say who is watching it.
+ */
+async function watchAsHost(manager: MatchManager, matchId: string): Promise<void> {
+  manager.connect(matchId, HOST, `watch-${HOST}`);
+  await manager.resume(matchId);
 }
 
 describe('MatchManager room lifecycle', () => {
@@ -122,8 +142,9 @@ describe('MatchManager room lifecycle', () => {
     const matchId = await manager.createRoom('callbreak', HOST, 4, 2);
     expect(manager.getRoomState(matchId).maxHands).toBe(2);
 
-    // Nobody claims a seat, so the whole match plays out inside startMatch.
+    // Nobody claims a seat, so the whole match plays out with the host watching.
     await manager.startMatch(matchId, HOST, new Map());
+    await watchAsHost(manager, matchId);
 
     const state = manager.getMaskedState(matchId, 'SPECTATOR');
     // Callbreak declares 5 hands; the host asked for 2 and gets 2.
@@ -241,61 +262,117 @@ describe('MatchManager live match', () => {
     expect(manager.ownsSeat(matchId, 0, USER_B)).toBe(false);
   });
 
-  it('hands a seat to AI once its owner disconnects, and back to them once they reconnect', async () => {
+  it('hands a seat to AI once its owner disconnects, while another player is still at the table', async () => {
     const { manager } = await buildManager();
-    const matchId = await quickStart(manager, { humanSeat: 0 });
+    const matchId = await manager.createRoom('callbreak', HOST);
+    manager.claimRoomSeat(matchId, 0, USER_A, 'Alice');
+    manager.claimRoomSeat(matchId, 1, USER_B, 'Bob');
+    await manager.startMatch(
+      matchId,
+      HOST,
+      new Map([
+        [0, { userId: USER_A, token: `conn-${USER_A}`, nodeId: 'test-node' }],
+        [1, { userId: USER_B, token: `conn-${USER_B}`, nodeId: 'test-node' }],
+      ]),
+    );
 
     const state = manager.getMaskedState(matchId, 0);
     expect(state.phase === 'BIDDING' || state.phase === 'PLAYING').toBe(true);
 
-    // Disconnect seat 0's owner mid-hand — AI should take over from here and
-    // play the whole match out without any further human input.
+    // Alice drops. Bob is still here, so the table must not stall on her —
+    // her seat plays via AI until the clock reaches Bob's.
     await manager.disconnect(matchId, USER_A, `conn-${USER_A}`);
-    const afterDisconnect = manager.getMaskedState(matchId, 0);
-    expect(afterDisconnect.matchOver).toBe(true);
+    expect(manager.getMaskedState(matchId, 1).turnSeat).toBe(1);
 
-    // Reconnecting after the hand is over is harmless — the claim still holds.
+    // Reconnecting hands the seat back — the claim was hers the whole time.
     manager.connect(matchId, USER_A, 'conn-a-2');
     expect(manager.ownsSeat(matchId, 0, USER_A)).toBe(true);
   });
 
-  it('stops driving an all-AI match once nobody has been connected for the no-human timeout', async () => {
-    const { manager } = await buildManager({ noHumanTimeoutMs: 5, aiMoveMinDelayMs: 20 });
+  it('stops the turn loop where it stands when the last player disconnects', async () => {
+    const { manager } = await buildManager({ noHumanTimeoutMs: 60_000 });
+    const matchId = await quickStart(manager, { humanSeat: 0 });
+    const before = manager.getMaskedState(matchId, 0);
+
+    await manager.disconnect(matchId, USER_A, `conn-${USER_A}`);
+
+    // Nobody left to play for: the position is untouched rather than played
+    // out on fallback moves nobody chose and nobody watched.
+    const after = manager.getMaskedState(matchId, 0);
+    expect(after.matchOver).toBe(false);
+    expect(after.turnSeat).toBe(before.turnSeat);
+    expect(after.handNumber).toBe(before.handNumber);
+    expect(after.completedTricks).toHaveLength(before.completedTricks.length);
+    // Still inside the reconnect window, so not terminated yet.
+    expect(manager.isAbandoned(matchId)).toBe(false);
+  });
+
+  it('terminates a match once the reconnect window passes with nobody connected', async () => {
+    const { manager } = await buildManager({ noHumanTimeoutMs: 20 });
+    const matchId = await quickStart(manager, { humanSeat: 0 });
+
+    await manager.disconnect(matchId, USER_A, `conn-${USER_A}`);
+    expect(manager.isAbandoned(matchId)).toBe(false);
+
+    await sleep(60);
+    expect(manager.isAbandoned(matchId)).toBe(true);
+    // Terminated mid-match — the loop gave up rather than played it out.
+    expect(manager.getMaskedState(matchId, 'SPECTATOR').matchOver).toBe(false);
+  });
+
+  it('terminates an all-AI table nobody ever sat down at', async () => {
+    const { manager } = await buildManager({ noHumanTimeoutMs: 20, aiMoveMinDelayMs: 20 });
     const matchId = await manager.createRoom('callbreak', HOST);
 
     // Nobody ever claims a seat, so this table is AI vs AI from the start —
     // exactly the case that would otherwise run to completion unattended.
     await manager.startMatch(matchId, HOST, new Map());
+    expect(manager.getMaskedState(matchId, 'SPECTATOR').completedTricks).toHaveLength(0);
 
+    await sleep(60);
     expect(manager.isAbandoned(matchId)).toBe(true);
-    const state = manager.getMaskedState(matchId, 'SPECTATOR');
-    // Caught mid-match, not finished — the loop gave up rather than played it out.
-    expect(state.matchOver).toBe(false);
+  });
+
+  it('does not terminate a match a player reconnects to inside the window', async () => {
+    const { manager } = await buildManager({ noHumanTimeoutMs: 40, aiMoveMinDelayMs: 0 });
+    const matchId = await quickStart(manager, { humanSeat: 0 });
+
+    await manager.disconnect(matchId, USER_A, `conn-${USER_A}`);
+    await sleep(10);
+    manager.connect(matchId, USER_A, 'conn-a-2');
+
+    // Well past the original deadline: reconnecting must have cancelled it,
+    // not merely postponed the verdict.
+    await sleep(80);
+    expect(manager.isAbandoned(matchId)).toBe(false);
   });
 
   it('does not abandon a match while a human is connected, even if disconnect/reconnect cycles happen', async () => {
     const { manager } = await buildManager({ noHumanTimeoutMs: 5, aiMoveMinDelayMs: 20 });
     const matchId = await quickStart(manager, { humanSeat: 0 });
 
+    await sleep(30);
     expect(manager.isAbandoned(matchId)).toBe(false);
   });
 
-  it('resumes driving a match once a human reconnects after being flagged abandoned', async () => {
-    const { manager } = await buildManager({ noHumanTimeoutMs: 5, aiMoveMinDelayMs: 20 });
+  it('picks the turn loop back up when a player reconnects to a paused match', async () => {
+    const { manager } = await buildManager({ noHumanTimeoutMs: 5_000, aiMoveMinDelayMs: 0 });
     const matchId = await manager.createRoom('callbreak', HOST);
     manager.claimRoomSeat(matchId, 0, USER_A, 'Alice');
     // Claimed but never connected — nobody is actually present when the match goes live.
     await manager.startMatch(matchId, HOST, new Map());
-    expect(manager.isAbandoned(matchId)).toBe(true);
+    expect(manager.isAbandoned(matchId)).toBe(false);
 
     manager.connect(matchId, USER_A, `conn-${USER_A}`);
-    expect(manager.isAbandoned(matchId)).toBe(false);
-    expect(manager.ownsSeat(matchId, 0, USER_A)).toBe(true);
+    await manager.resume(matchId);
 
+    expect(manager.ownsSeat(matchId, 0, USER_A)).toBe(true);
+    // The AI seats played on until the clock reached the one human here.
     const state = manager.getMaskedState(matchId, 0);
-    if (state.turnSeat === 0) {
-      await manager.submitMove(matchId, 0, state.legalMoves[0]!.id, USER_A);
-    }
+    expect(state.turnSeat).toBe(0);
+    expect(state.legalMoves.length).toBeGreaterThan(0);
+
+    await manager.submitMove(matchId, 0, state.legalMoves[0]!.id, USER_A);
     expect(manager.isAbandoned(matchId)).toBe(false);
   });
 
@@ -309,9 +386,13 @@ describe('MatchManager live match', () => {
     const { manager } = await buildManager({ roundIntermissionMs: 120 });
     const matchId = await manager.createRoom('callbreak', HOST);
 
-    // All-AI table: startMatch drives every hand, so let it run in the
-    // background and observe the pause between hands as it happens.
-    const running = manager.startMatch(matchId, HOST, new Map());
+    // All-AI table with the host watching: the turn loop drives every hand, so
+    // let it run in the background and observe the pause between hands as it
+    // happens.
+    const running = (async () => {
+      await manager.startMatch(matchId, HOST, new Map());
+      await watchAsHost(manager, matchId);
+    })();
 
     let sawRoundResult = false;
     for (let i = 0; i < 200 && !sawRoundResult; i++) {
@@ -351,10 +432,10 @@ describe('MatchManager live match', () => {
 describe('MatchManager bot difficulty levels', () => {
   function taggedTiers(): Record<BotLevel, BotTier> {
     return {
-      easy: { provider: new TaggedProvider('easy'), llmTimeoutMs: 1000 },
-      medium: { provider: new TaggedProvider('medium'), llmTimeoutMs: 1000 },
-      hard: { provider: new TaggedProvider('hard'), llmTimeoutMs: 1000 },
-      extreme: { provider: new TaggedProvider('extreme'), llmTimeoutMs: 1000 },
+      easy: { provider: new TaggedProvider('easy'), llmTimeoutMs: 1000, memoryFraction: 1 },
+      medium: { provider: new TaggedProvider('medium'), llmTimeoutMs: 1000, memoryFraction: 1 },
+      hard: { provider: new TaggedProvider('hard'), llmTimeoutMs: 1000, memoryFraction: 1 },
+      extreme: { provider: new TaggedProvider('extreme'), llmTimeoutMs: 1000, memoryFraction: 1 },
     };
   }
 

@@ -300,7 +300,16 @@ export class MatchGateway {
         }
         this.manager.claimSeat(matchId, seat, userId);
         this.manager.connect(matchId, userId, token, nodeId);
-        return { kind: 'MATCH', state: this.manager.getMaskedState(matchId, seat) } satisfies JoinResult;
+        // Snapshot first, then restart the turn loop: this may be the
+        // reconnect that ends an empty stretch, and if an AI seat is on the
+        // clock nothing else would ever wake the match up again. Not awaited
+        // — the loop runs until a human seat blocks it, which is far longer
+        // than a JOIN should take, and every move it makes fans out anyway.
+        const state = this.manager.getMaskedState(matchId, seat);
+        void this.manager.resume(matchId).catch((err: unknown) => {
+          console.error(`[gateway] failed to resume match "${matchId}" after a rejoin:`, err);
+        });
+        return { kind: 'MATCH', state } satisfies JoinResult;
       }
 
       case 'START': {
@@ -467,15 +476,23 @@ export class MatchGateway {
   }
 
   /**
-   * Releases a match the turn loop has stopped driving because nobody is
-   * connected to it — unlike `scheduleRetirement`, there is no grace period
-   * to hold state for a result screen, since `MatchManager` already waited
-   * out `noHumanTimeoutMs` before flagging it. Evicted immediately so it
-   * doesn't sit idle holding a lease.
+   * Terminates a match everybody walked away from. Unlike
+   * `scheduleRetirement` there is no grace period to hold state for a result
+   * screen — `MatchManager` already waited out `noHumanTimeoutMs` with nobody
+   * connected before flagging it, which *was* the grace period.
+   *
+   * The durable snapshot goes too, and that is the whole point: leaving it
+   * behind would let the next command for this matchId `recover()` the table
+   * and start it up again, which is exactly the un-terminated state we just
+   * spent two minutes deciding against. A player who comes back after this
+   * gets `MATCH_NOT_FOUND` and returns to the lobby.
    */
   private releaseAbandoned(matchId: string): void {
     this.owned.delete(matchId);
     this.manager.evict(matchId);
+    void this.repository.delete(matchId).catch((err: unknown) => {
+      console.warn(`[gateway] could not delete abandoned match "${matchId}": ${(err as Error).message}`);
+    });
     void this.registry.release(matchId, this.nodeId).catch(() => undefined);
   }
 
@@ -523,6 +540,14 @@ export class MatchGateway {
     // Sweep connections belonging to nodes that stopped reporting in.
     for (const matchId of this.manager.liveMatchIds()) {
       if (!this.owned.has(matchId)) continue;
+      // Normally a match is released the moment it is flagged, on the change
+      // that flagged it. This is the backstop for the fan-out that failed on
+      // the way there: nothing else would ever change an abandoned match, so
+      // without a periodic look it would hold its lease forever.
+      if (this.manager.isAbandoned(matchId)) {
+        this.releaseAbandoned(matchId);
+        continue;
+      }
       await this.manager.evictStaleNodes(matchId, this.presenceTtlMs).catch((err: unknown) => {
         console.error(`[gateway] presence sweep failed for "${matchId}":`, err);
       });
@@ -531,25 +556,36 @@ export class MatchGateway {
 
   /** Re-asserts this node's sockets to each match's owner. */
   private async pushPresence(): Promise<void> {
-    for (const [matchId, byToken] of [...this.localPresence]) {
-      if (byToken.size === 0) {
-        this.localPresence.delete(matchId);
-        continue;
-      }
-      try {
-        await this.route<void>(matchId, {
-          kind: 'SYNC_PRESENCE',
-          matchId,
-          nodeId: this.nodeId,
-          connections: [...byToken.values()],
-        });
-      } catch (err) {
-        if (err instanceof MatchNotFoundError) {
-          this.localPresence.delete(matchId); // match is over; stop asserting it
-          continue;
-        }
-        // Owner temporarily unreachable — next tick tries again.
-      }
+    for (const matchId of [...this.localPresence.keys()]) await this.syncPresenceNow(matchId);
+  }
+
+  /**
+   * Re-asserts this node's sockets for one match immediately, rather than on
+   * the next `pushPresence` tick.
+   *
+   * Called the moment a room goes live, because the people watching without a
+   * seat are not in `startMatch`'s `connectedSeats` — they hold no seat to be
+   * listed under. Without this an all-AI table would read as empty to the
+   * turn loop and pause the instant the host started it, and would then be
+   * terminated with its host sitting right there watching.
+   */
+  async syncPresenceNow(matchId: string): Promise<void> {
+    const byToken = this.localPresence.get(matchId);
+    if (!byToken || byToken.size === 0) {
+      this.localPresence.delete(matchId);
+      return;
+    }
+    try {
+      await this.route<void>(matchId, {
+        kind: 'SYNC_PRESENCE',
+        matchId,
+        nodeId: this.nodeId,
+        connections: [...byToken.values()],
+      });
+    } catch (err) {
+      if (err instanceof MatchNotFoundError) this.localPresence.delete(matchId); // match is over; stop asserting it
+      // Any other failure: the owner is temporarily unreachable, and the next
+      // presence tick tries again.
     }
   }
 

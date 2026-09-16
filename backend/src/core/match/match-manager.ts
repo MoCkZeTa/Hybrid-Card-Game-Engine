@@ -21,6 +21,14 @@
  *
  * The intermission is a timer rather than a "host clicks continue" gate on
  * purpose: nothing then stalls when the host closes their tab mid-match.
+ *
+ * A match with *nobody* connected does stall, deliberately. Seats whose owner
+ * has dropped play via AI so the other players aren't held up — but once the
+ * last person leaves there is no one to play for, so the turn loop stops
+ * where it stands rather than running the rest of the match out unwatched.
+ * The position waits `noHumanTimeoutMs` for someone to come back; if nobody
+ * does, the match is terminated (`abandoned`) and the transport layer deletes
+ * it.
  */
 
 import { randomUUID } from 'node:crypto';
@@ -79,6 +87,10 @@ interface LiveMatch {
    * its owner has at least one live connection — a seat whose owner has none
    * (including right after their disconnect) plays itself via AI on its turn
    * until a human is there to take it.
+   *
+   * Empty is the special case: with *nobody* connected there is no one to
+   * play for, so the turn loop stops entirely rather than playing the rest of
+   * the match out unwatched (see `driveAiTurns`).
    */
   readonly connectedUsers: Map<string, Set<string>>;
   /**
@@ -93,13 +105,21 @@ interface LiveMatch {
   readonly nodeLastSeenAt: Map<string, number>;
   readonly decisions: Decision[];
   /**
-   * Epoch ms since `connectedUsers` last became empty, or null while at least
-   * one human is connected. Drives `noHumanTimeoutMs`: a match nobody is
-   * watching plays AI vs AI forever otherwise, since no seat ever blocks the
-   * AI runner. Reset the instant a human (re)connects.
+   * Non-null exactly while `connectedUsers` is empty: it fires
+   * `noHumanTimeoutMs` after the table emptied and terminates the match.
+   * Armed by `touchPresence` when the last connection drops, cleared the
+   * moment anyone comes back — so a refresh or a briefly dropped tunnel costs
+   * nothing, while a table everyone has genuinely walked away from does not
+   * linger.
    */
-  emptySince: number | null;
-  /** Set once `emptySince` has aged past `noHumanTimeoutMs` — the turn loop stops driving this match. */
+  abandonTimer: NodeJS.Timeout | null;
+  /**
+   * Set once the empty stretch outlasted `noHumanTimeoutMs`. The match is
+   * finished as far as this node is concerned: the turn loop will never drive
+   * it again, and the transport layer releases the lease, drops it from
+   * memory, and deletes its snapshot on the change this flag emits (see
+   * `MatchGateway#releaseAbandoned`).
+   */
   abandoned: boolean;
   /** How hard every AI seat in this match plays — one level for the whole match, chosen (or defaulted) at `startMatch`. */
   readonly botLevel: BotLevel;
@@ -134,11 +154,12 @@ export interface MatchManagerOptions {
    */
   readonly roundIntermissionMs?: number;
   /**
-   * How long a match may sit with zero connected humans before it is treated
-   * as abandoned and the turn loop stops driving it — otherwise an empty
-   * table plays AI vs AI forever, since no seat is ever blocked waiting on a
-   * human. A brief refresh/reconnect gap is normal and shouldn't trip this;
-   * default 120000ms.
+   * How long a match may sit with zero connected humans before it is
+   * terminated. The turn loop stops the instant the last player leaves, so
+   * this is purely the reconnect grace window: come back inside it and the
+   * match resumes exactly where it paused; miss it and the match is gone for
+   * good. A refresh, a tunnel drop, or a phone changing networks is normal
+   * and shouldn't cost anyone their game; default 120000ms.
    */
   readonly noHumanTimeoutMs?: number;
   /** Optional sink for AI decisions. Omitted in tests so they run silently. */
@@ -153,6 +174,9 @@ export type ChangeListener = (matchId: string) => void;
  * real node ID; this keeps the signature honest for tests and local dev.
  */
 const LOCAL_NODE = 'local';
+
+/** @see MatchManagerOptions#noHumanTimeoutMs */
+const DEFAULT_NO_HUMAN_TIMEOUT_MS = 120_000;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -331,13 +355,16 @@ export class MatchManager {
       connectionNodes,
       nodeLastSeenAt,
       decisions: [],
-      emptySince: connectedUsers.size === 0 ? Date.now() : null,
+      abandonTimer: null,
       abandoned: false,
       botLevel: botLevel ?? this.opts.defaultBotLevel,
     };
 
     this.rooms.delete(matchId);
     this.matches.set(matchId, live);
+    // Starts the termination countdown when the host started a table nobody
+    // is actually sitting at — the same path any later empty stretch takes.
+    this.touchPresence(live);
     this.persist(live);
     this.emitChange(matchId);
 
@@ -369,7 +396,7 @@ export class MatchManager {
     const plugin = this.opts.plugins.get(persisted.gameId);
     const humanSeats = new Set(persisted.state.players.filter((p) => !p.isAI).map((p) => p.seat));
 
-    this.matches.set(persisted.matchId, {
+    const live: LiveMatch = {
       matchId: persisted.matchId,
       plugin,
       state: persisted.state,
@@ -394,10 +421,13 @@ export class MatchManager {
       // Seat claims aren't persisted, so a freshly-adopted match always starts
       // with nobody connected — the same reconnect grace window applies here
       // as it would for any other empty stretch.
-      emptySince: Date.now(),
+      abandonTimer: null,
       abandoned: false,
       botLevel: this.opts.defaultBotLevel,
-    });
+    };
+
+    this.matches.set(persisted.matchId, live);
+    this.touchPresence(live);
   }
 
   /** Resumes the turn loop after `adopt` — separate so the caller can wire listeners first. */
@@ -447,6 +477,12 @@ export class MatchManager {
    * opaque `token` unique to that connection (the caller's own socket
    * object works fine) so a second tab, or the same tab re-sending JOIN on
    * the same socket, can't be double-counted or double-removed.
+   *
+   * Presence only — it does not restart the turn loop, which matters when
+   * this is the reconnect that ends an empty stretch: the caller must follow
+   * it with `resume()`, or an AI seat on the clock would sit there forever.
+   * (Kept separate so the caller can answer the JOIN with a state snapshot
+   * before AI turns start moving it.)
    */
   connect(matchId: string, userId: string, token: string, nodeId = LOCAL_NODE): void {
     const live = this.mustGet(matchId);
@@ -466,6 +502,10 @@ export class MatchManager {
    * passed to `connect`). Once their last connection drops, any seat they
    * hold falls under AI control on its next turn — including the current
    * one, if it's already on the clock — until they reconnect.
+   *
+   * Unless they were the last one here: with the table empty the turn loop
+   * stops instead, and the match is terminated if nobody returns within
+   * `noHumanTimeoutMs`.
    */
   async disconnect(matchId: string, userId: string, token: string): Promise<void> {
     const live = this.matches.get(matchId);
@@ -485,17 +525,64 @@ export class MatchManager {
   }
 
   /**
-   * Keeps `emptySince`/`abandoned` in sync with `connectedUsers`. Called after
-   * every operation that can change who is connected, so `driveAiTurns` always
-   * sees an up-to-date picture regardless of which path touched presence.
+   * Keeps `abandonTimer` in sync with `connectedUsers`. Called after every
+   * operation that can change who is connected, so the termination countdown
+   * starts and stops with the last player leaving and the first one coming
+   * back, regardless of which path touched presence.
    */
   private touchPresence(live: LiveMatch): void {
     if (live.connectedUsers.size === 0) {
-      if (live.emptySince === null) live.emptySince = Date.now();
+      this.armAbandonTimer(live);
     } else {
-      live.emptySince = null;
       live.abandoned = false;
+      this.clearAbandonTimer(live);
     }
+  }
+
+  /**
+   * Starts the countdown to terminating an empty match. A timer rather than a
+   * deadline checked inside the turn loop, because the turn loop is exactly
+   * what stops running when everybody leaves — there would be nothing left to
+   * do the checking.
+   *
+   * A match that has already finished is left alone: it is retired on its own
+   * (longer) schedule so a player who reconnects still gets the result screen.
+   */
+  private armAbandonTimer(live: LiveMatch): void {
+    if (live.abandonTimer !== null || live.abandoned || live.matchOver) return;
+    const timer = setTimeout(
+      () => {
+        live.abandonTimer = null;
+        this.abandonIfStillEmpty(live.matchId);
+      },
+      this.opts.noHumanTimeoutMs ?? DEFAULT_NO_HUMAN_TIMEOUT_MS,
+    );
+    timer.unref?.();
+    live.abandonTimer = timer;
+  }
+
+  private clearAbandonTimer(live: LiveMatch): void {
+    if (live.abandonTimer === null) return;
+    clearTimeout(live.abandonTimer);
+    live.abandonTimer = null;
+  }
+
+  /**
+   * The countdown expired: nobody came back, so the match ends here. Flagging
+   * it is all this layer does — the change it emits is what makes the
+   * transport layer release the lease, drop the match, and delete its
+   * snapshot, which is knowledge `MatchManager` deliberately doesn't have.
+   */
+  private abandonIfStillEmpty(matchId: string): void {
+    const live = this.matches.get(matchId);
+    if (!live || live.abandoned || live.matchOver) return;
+    if (live.connectedUsers.size > 0) return; // someone came back between the timer firing and now
+
+    live.abandoned = true;
+    console.warn(
+      `[match] terminating match "${matchId}" — nobody has been connected for ${this.opts.noHumanTimeoutMs ?? DEFAULT_NO_HUMAN_TIMEOUT_MS}ms`,
+    );
+    this.emitChange(matchId);
   }
 
   /**
@@ -588,10 +675,9 @@ export class MatchManager {
 
   /**
    * True once a match has had zero connected humans for longer than
-   * `noHumanTimeoutMs` and the turn loop has stopped driving it. Used to
-   * release ownership of a match nobody is watching, rather than letting it
-   * run AI vs AI (or sit idle) forever. Reverts to false the moment a human
-   * reconnects, so callers should re-check rather than cache this.
+   * `noHumanTimeoutMs` — everybody left and nobody came back, so it is over.
+   * Callers act on this by releasing and deleting the match rather than
+   * holding a lease on a table nobody is sitting at.
    */
   isAbandoned(matchId: string): boolean {
     return this.matches.get(matchId)?.abandoned ?? false;
@@ -599,6 +685,10 @@ export class MatchManager {
 
   /** Forgets a match entirely — called when this node hands ownership back or shuts down. */
   evict(matchId: string): void {
+    const live = this.matches.get(matchId);
+    // Otherwise a match handed to another node would still be counting down
+    // to termination here, and fire against a state we no longer own.
+    if (live) this.clearAbandonTimer(live);
     this.rooms.delete(matchId);
     this.matches.delete(matchId);
   }
@@ -648,8 +738,10 @@ export class MatchManager {
 
   /**
    * Plays out consecutive AI turns until a connected human seat is on the
-   * clock, the match ends, or a safety cap trips. Hand boundaries are crossed
-   * inline — an all-AI table plays every hand of the match in one run.
+   * clock, the last player disconnects, the match ends, or a safety cap
+   * trips. Hand boundaries are crossed inline — a table whose seats are all
+   * AI plays every hand of the match in one run, for as long as somebody is
+   * there to watch it.
    */
   private async driveAiTurns(matchId: string): Promise<void> {
     // Generous per-hand allowance (bids + trump + every card played) times the
@@ -660,19 +752,13 @@ export class MatchManager {
     for (let i = 0; i < safetyCap; i++) {
       const live = this.mustGet(matchId);
 
-      // With nobody connected, no seat ever blocks the AI runner — an empty
-      // table would otherwise play AI vs AI to the end of the match on its
-      // own. Stop driving it once the empty stretch outlasts the reconnect
-      // grace period; a human coming back resets `emptySince`/`abandoned`
-      // via `touchPresence` and the loop picks up again on their next move.
-      const noHumanTimeoutMs = this.opts.noHumanTimeoutMs ?? 120_000;
-      if (live.connectedUsers.size === 0 && live.emptySince !== null && Date.now() - live.emptySince >= noHumanTimeoutMs) {
-        if (!live.abandoned) {
-          live.abandoned = true;
-          this.emitChange(matchId);
-        }
-        return;
-      }
+      // Nobody is connected. No seat blocks the AI runner in that state, so
+      // without this the table would play itself to the end of the match on
+      // moves no player chose and no player watched. Stop dead instead and
+      // leave the position exactly as the last person to leave saw it:
+      // whoever reconnects inside `noHumanTimeoutMs` resumes from here, and
+      // if nobody does, `abandonTimer` terminates the match outright.
+      if (live.connectedUsers.size === 0) return;
 
       const phaseKind = live.plugin.rules.phases.find((p) => p.name === live.state.phase)?.kind;
 
@@ -698,6 +784,10 @@ export class MatchManager {
         this.emitChange(matchId);
 
         if (intermissionMs > 0) await sleep(intermissionMs);
+        // Everyone may have left while the round popup was up. Don't deal a
+        // hand into an empty room; the check at the top of the loop can't
+        // help here because the next thing it does is deal.
+        if (live.connectedUsers.size === 0) return;
 
         live.state = startNextHand(live.plugin.rules, live.state, live.rng);
         live.nextRoundAt = null;
@@ -717,25 +807,15 @@ export class MatchManager {
       // (or the equivalent test fixture) — `!` because `Record` indexing is
       // widened to `| undefined` under `noUncheckedIndexedAccess`.
       const tier = this.opts.botTiers[live.botLevel]!;
-      // Nobody is connected to this match at all (mid reconnect-grace-period,
-      // or genuinely abandoned) — nobody is watching the AI's reasoning, so
-      // don't spend LLM quota on it. Play the deterministic first legal move
-      // instead; a reconnecting human still resumes a live, in-progress match.
-      const decision: Decision =
-        live.connectedUsers.size === 0
-          ? {
-              moveId: generateLegalMoves(live.plugin.rules, live.state)[0]!.id,
-              source: 'fallback',
-              reasoning: 'No one is connected to this match; skipped the LLM call to avoid spending quota unattended.',
-            }
-          : await decideTurn({
-              rules: live.plugin.rules,
-              plugin: live.plugin,
-              state: live.state,
-              seat: turnSeat,
-              provider: tier.provider,
-              llmTimeoutMs: tier.llmTimeoutMs,
-            });
+      const decision: Decision = await decideTurn({
+        rules: live.plugin.rules,
+        plugin: live.plugin,
+        state: live.state,
+        seat: turnSeat,
+        provider: tier.provider,
+        llmTimeoutMs: tier.llmTimeoutMs,
+        memoryFraction: tier.memoryFraction,
+      });
 
       if (this.opts.onDecision) {
         // Recomputed only for the log line's human-readable label — cheap

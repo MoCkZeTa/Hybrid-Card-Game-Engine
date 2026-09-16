@@ -3,9 +3,24 @@
  * chat-completions endpoint, so a plain `fetch` covers it with no SDK
  * dependency — kept intentionally thin so a future `GeminiProvider` is the
  * only other file this pattern needs to be copied into.
+ *
+ * It implements `LLMCompletionProvider` too: the game designer needs free-form
+ * authoring from the same account, the same key pool and the same retry
+ * behaviour as a move decision, and duplicating the key rotation into a second
+ * class is how the two would drift apart. The transport below is shared; the
+ * two public methods differ only in what they ask for and how they read the
+ * answer back.
  */
 
-import { LLMProviderError, parseDecisionResponse, type LLMDecisionRequest, type LLMDecisionResponse, type LLMProvider } from './provider.js';
+import {
+  LLMProviderError,
+  parseDecisionResponse,
+  type LLMCompletionProvider,
+  type LLMCompletionRequest,
+  type LLMDecisionRequest,
+  type LLMDecisionResponse,
+  type LLMProvider,
+} from './provider.js';
 
 export interface GroqProviderOptions {
   /**
@@ -37,6 +52,12 @@ function isWorthRetryingOnAnotherKey(status: number, body: string): boolean {
   // be worth it, unlike a genuinely bad request which fails identically every
   // time.
   if (status === 400 && /failed to validate json/i.test(body)) return true;
+  // A tokens-per-minute 413 is charged against the *organization* that owns the
+  // key, not against this server — and a key pool assembled from several
+  // accounts spans several organizations. So unlike most 413s (which mean the
+  // request itself is too big and would fail identically everywhere), this one
+  // frequently succeeds on the very next key. Worth one.
+  if (status === 413 && /tokens per minute|TPM/i.test(body)) return true;
   return false;
 }
 
@@ -62,13 +83,23 @@ export function maxTokensFor(reasoningEffort: 'low' | 'medium' | 'high' | undefi
   }
 }
 
-export class GroqProvider implements LLMProvider {
+/** The subset of Groq's chat-completions body this file ever varies. */
+interface ChatRequest {
+  readonly temperature: number;
+  readonly maxTokens: number;
+  readonly json: boolean;
+  readonly systemPrompt: string;
+  readonly userPrompt: string;
+  readonly signal: AbortSignal;
+}
+
+export class GroqProvider implements LLMProvider, LLMCompletionProvider {
   readonly name = 'groq';
+  readonly model: string;
   private readonly apiKeys: readonly string[];
-  private readonly model: string;
   private readonly baseUrl: string;
   private readonly reasoningEffort?: 'low' | 'medium' | 'high';
-  /** Where the next call starts in the key list; advances once per `decide()`. */
+  /** Where the next call starts in the key list; advances once per public call. */
   private cursor = 0;
 
   constructor(opts: GroqProviderOptions) {
@@ -86,18 +117,52 @@ export class GroqProvider implements LLMProvider {
   }
 
   async decide(request: LLMDecisionRequest): Promise<LLMDecisionResponse> {
+    const content = await this.chat({
+      temperature: 0.3,
+      maxTokens: maxTokensFor(this.reasoningEffort),
+      json: true,
+      systemPrompt: request.systemPrompt,
+      userPrompt: request.userPrompt,
+      signal: request.signal,
+    });
+    return parseDecisionResponse(content);
+  }
+
+  /**
+   * Free-form authoring. Note it does **not** send `reasoning_effort`: that
+   * field is a bot-difficulty lever (`provider-router.ts`), and a game being
+   * drafted has no difficulty. A designer provider is built without one, so
+   * `this.reasoningEffort` is undefined on the instance that serves this path.
+   */
+  async complete(request: LLMCompletionRequest): Promise<string> {
+    return this.chat({
+      temperature: request.temperature ?? 0.4,
+      maxTokens: request.maxTokens,
+      json: request.json ?? false,
+      systemPrompt: request.systemPrompt,
+      userPrompt: request.userPrompt,
+      signal: request.signal,
+    });
+  }
+
+  /**
+   * One call, tried against each key in turn until one answers or the abort
+   * signal fires. Both public methods funnel through here so key rotation,
+   * retry classification and error wrapping exist exactly once.
+   */
+  private async chat(request: ChatRequest): Promise<string> {
     const start = this.cursor;
     this.cursor = (this.cursor + 1) % this.apiKeys.length;
 
     let lastError: unknown;
     for (let attempt = 0; attempt < this.apiKeys.length; attempt++) {
-      // The whole call sits under one `LLM_TIMEOUT_MS` abort signal, so once
-      // that fires there is no time left to try the next key either.
+      // The whole call sits under one abort signal, so once that fires there is
+      // no time left to try the next key either.
       if (request.signal.aborted) break;
 
       const keyIndex = (start + attempt) % this.apiKeys.length;
       try {
-        return await this.decideWithKey(request, this.apiKeys[keyIndex]!);
+        return await this.chatWithKey(request, this.apiKeys[keyIndex]!);
       } catch (err) {
         lastError = err;
         if (!(err instanceof RetryableGroqError)) throw new LLMProviderError(this.name, err);
@@ -107,7 +172,7 @@ export class GroqProvider implements LLMProvider {
     throw new LLMProviderError(this.name, lastError ?? new Error('no Groq key produced a response'));
   }
 
-  private async decideWithKey(request: LLMDecisionRequest, apiKey: string): Promise<LLMDecisionResponse> {
+  private async chatWithKey(request: ChatRequest, apiKey: string): Promise<string> {
     let res: Response;
     try {
       res = await fetch(`${this.baseUrl}/chat/completions`, {
@@ -119,9 +184,9 @@ export class GroqProvider implements LLMProvider {
         },
         body: JSON.stringify({
           model: this.model,
-          temperature: 0.3,
-          max_tokens: maxTokensFor(this.reasoningEffort),
-          response_format: { type: 'json_object' },
+          temperature: request.temperature,
+          max_tokens: request.maxTokens,
+          ...(request.json ? { response_format: { type: 'json_object' } } : {}),
           ...(this.reasoningEffort ? { reasoning_effort: this.reasoningEffort } : {}),
           messages: [
             { role: 'system', content: request.systemPrompt },
@@ -138,7 +203,7 @@ export class GroqProvider implements LLMProvider {
 
     if (!res.ok) {
       const body = await res.text().catch(() => '');
-      const message = `Groq API returned ${res.status} ${res.statusText}: ${body.slice(0, 300)}`;
+      const message = describeGroqFailure(res, body, request.maxTokens);
       if (isWorthRetryingOnAnotherKey(res.status, body)) throw new RetryableGroqError(message);
       throw new Error(message);
     }
@@ -149,8 +214,31 @@ export class GroqProvider implements LLMProvider {
     const content = json.choices?.[0]?.message?.content;
     if (!content) throw new Error('Groq API response had no message content');
 
-    return parseDecisionResponse(content);
+    return content;
   }
+}
+
+/**
+ * Turns a Groq error body into something the reader can act on.
+ *
+ * The one worth special-casing is the tokens-per-minute 413. Groq charges
+ * `max_tokens` against the TPM budget *at request time*, before a single token
+ * is generated, so a request whose completion would have been 2000 tokens is
+ * still refused for asking for a 16000 ceiling. Relayed raw it reads as "the
+ * prompt is too big", and the operator goes and shortens their prompt — which
+ * is the one change that will not fix it. Naming the actual lever avoids that.
+ */
+function describeGroqFailure(res: Response, body: string, maxTokens: number): string {
+  const generic = `Groq API returned ${res.status} ${res.statusText}: ${body.slice(0, 300)}`;
+  if (res.status !== 413 || !/tokens per minute|TPM/i.test(body)) return generic;
+
+  const limit = body.match(/Limit (\d+)/)?.[1];
+  return (
+    `Groq refused the request: this account's per-minute token budget${limit ? ` (${limit})` : ''} is smaller than ` +
+    `the prompt plus the ${maxTokens}-token reply ceiling this call reserves. Lower DESIGNER_MAX_TOKENS, ` +
+    `set DESIGNER_MODEL to a model with a larger budget on this account, or upgrade the Groq tier. ` +
+    `(${body.slice(0, 200)})`
+  );
 }
 
 /** Marks a failure that a different key might not hit. Internal to this file. */

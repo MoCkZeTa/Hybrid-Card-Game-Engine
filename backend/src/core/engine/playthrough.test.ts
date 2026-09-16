@@ -12,10 +12,11 @@ import { fileURLToPath } from 'node:url';
 import { PluginManager } from '../plugin/plugin-manager.js';
 import { InMemoryPluginRepository } from '../plugin/plugin-repository.js';
 import { createRng } from './deck.js';
-import { createMatch } from './state.js';
+import { createMatch, startNextHand, teamKeyForSeat } from './state.js';
 import { generateLegalMoves } from './legal-moves.js';
 import { applyMove, IllegalMoveError } from './apply-move.js';
 import { applyHandScoring } from './scoring.js';
+import { trickPointValue } from './trick.js';
 import type { GameState, RulesDsl } from '@hcg/shared';
 
 const gamesRoot = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'games');
@@ -141,5 +142,77 @@ describe('Callbreak full hand playthrough', () => {
     } else {
       expect(followerMoves.length).toBe(followerHand.length);
     }
+  });
+});
+
+describe('completed-trick history', () => {
+  it('keeps every trick of the hand, and the summaries derived from it still agree', async () => {
+    const plugins = await loadPlugins();
+    const rules = plugins.get('29').rules;
+    let state = createMatch({
+      rules,
+      gameId: '29',
+      matchId: 'm-29-history',
+      playerCount: 4,
+      dealerSeat: 0,
+      playerNames: ['A', 'B', 'C', 'D'],
+      aiSeats: new Set([1, 2, 3]),
+      rng: createRng(11),
+    });
+
+    state = playUntil(rules, state, 'PLAYING');
+    expect(state.completedTricks).toHaveLength(0);
+
+    state = playUntil(rules, state, 'SCORING');
+
+    // Eight cards each, so eight tricks — and all eight survive to the end of
+    // the hand rather than each overwriting the last.
+    expect(state.completedTricks).toHaveLength(8);
+    for (const trick of state.completedTricks) {
+      expect(trick.cards).toHaveLength(4);
+      expect(trick.winnerSeat).toBeGreaterThanOrEqual(0);
+      expect(trick.winnerSeat).toBeLessThan(4);
+    }
+
+    // The history accounts for the whole deck exactly once: nothing dropped on
+    // append, nothing recorded twice.
+    const cardsPlayed = state.completedTricks.flatMap((t) => t.cards.map((c) => c.card));
+    expect(cardsPlayed).toHaveLength(32);
+    expect(new Set(cardsPlayed).size).toBe(32);
+
+    // The point of keeping the source at all: `tricksWon` and `handPoints`
+    // become checkable against it instead of being the only surviving record.
+    for (const player of state.players) {
+      const won = state.completedTricks.filter((t) => t.winnerSeat === player.seat);
+      expect(won).toHaveLength(player.tricksWon);
+    }
+    for (const [teamKey, points] of Object.entries(state.handPoints)) {
+      const captured = state.completedTricks
+        .filter((t) => teamKeyForSeat(rules, t.winnerSeat, 4) === teamKey)
+        .reduce((sum, t) => sum + trickPointValue(rules, t.cards), 0);
+      expect(captured).toBe(points);
+    }
+  });
+
+  it('clears the history on the next deal, like tricksWon and handPoints', async () => {
+    const plugins = await loadPlugins();
+    const rules = plugins.get('29').rules;
+    let state = createMatch({
+      rules,
+      gameId: '29',
+      matchId: 'm-29-history-reset',
+      playerCount: 4,
+      dealerSeat: 0,
+      playerNames: ['A', 'B', 'C', 'D'],
+      aiSeats: new Set([1, 2, 3]),
+      rng: createRng(13),
+    });
+
+    state = playUntil(rules, state, 'SCORING');
+    expect(state.completedTricks.length).toBeGreaterThan(0);
+
+    const next = startNextHand(rules, applyHandScoring(rules, state), createRng(14));
+    expect(next.completedTricks).toHaveLength(0);
+    expect(next.handNumber).toBe(2);
   });
 });

@@ -231,6 +231,11 @@ function applyPlayCard(rules: RulesDsl, state: GameState, card: (typeof state.pl
     ...next,
     currentTrick: [],
     lastTrick: trick,
+    // Appended rather than overwritten, so the hand keeps its whole history
+    // instead of only the most recent trick. `tricksWon` and `handPoints`
+    // above are summaries of exactly this; keeping the source means they stay
+    // checkable rather than being the only surviving record.
+    completedTricks: [...next.completedTricks, { cards: trick, winnerSeat, leadSuit: leadSuit! }],
     leadSuit: null,
     turnSeat: winnerSeat,
     handPoints: { ...next.handPoints, [winnerTeam]: (next.handPoints[winnerTeam] ?? 0) + points },

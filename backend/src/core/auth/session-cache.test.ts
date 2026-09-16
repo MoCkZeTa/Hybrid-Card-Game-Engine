@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { AuthService } from './auth-service.js';
-import { InMemoryUserRepository, type SessionRecord, type UserRecord, type UserRepository } from './user-repository.js';
+import {
+  InMemoryUserRepository,
+  type PasswordResetRecord,
+  type SessionRecord,
+  type UserRecord,
+  type UserRepository,
+} from './user-repository.js';
 import { InMemorySessionCache } from './session-cache.js';
 
 /** Wraps a repository so a test can see how often it was actually consulted. */
@@ -25,6 +31,27 @@ class CountingRepository implements UserRepository {
   }
   deleteSession(token: string) {
     return this.inner.deleteSession(token);
+  }
+  updatePassword(userId: string, passwordHash: string) {
+    return this.inner.updatePassword(userId, passwordHash);
+  }
+  findSessionsByUser(userId: string) {
+    return this.inner.findSessionsByUser(userId);
+  }
+  deleteSessionsForUser(userId: string, exceptToken?: string) {
+    return this.inner.deleteSessionsForUser(userId, exceptToken);
+  }
+  renewSession(token: string, expiresAt: Date) {
+    return this.inner.renewSession(token, expiresAt);
+  }
+  createPasswordReset(reset: PasswordResetRecord) {
+    return this.inner.createPasswordReset(reset);
+  }
+  findPasswordReset(tokenHash: string) {
+    return this.inner.findPasswordReset(tokenHash);
+  }
+  deletePasswordResetsForUser(userId: string) {
+    return this.inner.deletePasswordResetsForUser(userId);
   }
 }
 

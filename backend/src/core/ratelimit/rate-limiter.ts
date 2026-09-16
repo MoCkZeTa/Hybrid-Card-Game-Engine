@@ -35,6 +35,17 @@ export interface RateLimitRule {
 
 export interface RateLimiter {
   consume(key: string, rule: RateLimitRule, cost?: number): Promise<RateLimitResult>;
+  /**
+   * Forgets a bucket, refilling it to capacity.
+   *
+   * The login limiter is the reason this exists. Throttling by IP is right —
+   * password guessing is the threat — but a person who mistypes their own
+   * password twice should not then be sharing a shrinking budget with whoever
+   * else is behind the same NAT. Clearing the bucket on a *successful* login
+   * costs an attacker nothing (they have no successes to spend) and gives the
+   * legitimate user their full allowance back.
+   */
+  reset(key: string): Promise<void>;
 }
 
 // ---- In-memory --------------------------------------------------------------
@@ -81,8 +92,7 @@ export class InMemoryRateLimiter implements RateLimiter {
     return { allowed: true, remaining: Math.floor(bucket.tokens), retryAfterMs: 0 };
   }
 
-  /** Drops a key immediately — used to clear an IP's login budget after a success. */
-  reset(key: string): void {
+  async reset(key: string): Promise<void> {
     this.buckets.delete(key);
   }
 
@@ -172,6 +182,23 @@ export class RedisRateLimiter implements RateLimiter {
       return this.fallback.consume(key, rule, cost);
     }
   }
+
+  async reset(key: string): Promise<void> {
+    // Clear both sides: the local fallback may hold a bucket built up while
+    // Redis was unreachable, and leaving it there would keep penalising a user
+    // who has just proved who they are.
+    await this.fallback.reset(key);
+    try {
+      await this.redis.commands.del(this.prefix + key);
+    } catch {
+      /* the bucket expires on its own; a failed reset is not worth an error */
+    }
+  }
+
+  /** Releases the fallback limiter's sweep timer. Called from the shutdown sequence. */
+  stop(): void {
+    this.fallback.stop();
+  }
 }
 
 // ---- Rules ------------------------------------------------------------------
@@ -189,3 +216,27 @@ export const WS_CREATE_RULE: RateLimitRule = { capacity: 5, refillPerSecond: 0.2
 
 /** Login and register, per IP. Ten quick tries, then one every six seconds. */
 export const AUTH_RULE: RateLimitRule = { capacity: 10, refillPerSecond: 1 / 6 };
+
+/**
+ * Password-reset requests, per IP. Far tighter than login because the cost
+ * lands on someone else: every allowed request puts a real email in a real
+ * inbox, so an open one turns this server into someone's spam cannon. Three,
+ * then one every five minutes.
+ */
+export const PASSWORD_RESET_RULE: RateLimitRule = { capacity: 3, refillPerSecond: 1 / 300 };
+
+/**
+ * AI game-designer drafting calls, per *user* rather than per IP.
+ *
+ * Every allowed request spends seconds of LLM inference and thousands of
+ * tokens from the same key pool the game seats play on, so an unthrottled
+ * designer is a way to starve live matches of their AI turns. Keyed by user id
+ * because the cost is attributable to an account: throttling by IP would put a
+ * household or an office behind one shared budget for a feature that is
+ * deliberately iterative.
+ *
+ * Six in a burst, then one every twenty seconds — a drafting call takes long
+ * enough that a person cannot reach the sustained rate by typing, and the burst
+ * covers the back-and-forth of getting a first draft right.
+ */
+export const DESIGN_RULE: RateLimitRule = { capacity: 6, refillPerSecond: 1 / 20 };

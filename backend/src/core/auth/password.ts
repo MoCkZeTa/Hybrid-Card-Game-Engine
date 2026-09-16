@@ -52,3 +52,20 @@ export async function verifyPassword(password: string, stored: string): Promise<
   // Constant-time comparison — a length check first, since timingSafeEqual throws on mismatched lengths.
   return derived.length === expected.length && timingSafeEqual(derived, expected);
 }
+
+/**
+ * True when `stored` was produced with a weaker cost than we now use, so the
+ * caller should re-hash the plaintext it is holding and store the result.
+ *
+ * Raising `COST` alone does nothing for accounts that already exist — their
+ * hashes keep verifying at the old cost forever. The upgrade has to happen at
+ * the one moment the plaintext is legitimately in memory: a successful login.
+ * A hash we cannot parse also answers true; replacing it is strictly better
+ * than leaving something unreadable in the database.
+ */
+export function needsRehash(stored: string): boolean {
+  const parts = stored.split('$');
+  if (parts.length !== 4 || parts[0] !== 'scrypt') return true;
+  const cost = Number(parts[1]);
+  return !Number.isFinite(cost) || cost < COST;
+}

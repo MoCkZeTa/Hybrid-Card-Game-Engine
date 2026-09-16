@@ -33,11 +33,14 @@ class AlwaysFirstMoveProvider implements LLMProvider {
 
 function allTiers(provider: LLMProvider, llmTimeoutMs = 1000) {
   return {
-    easy: { provider, llmTimeoutMs },
-    medium: { provider, llmTimeoutMs },
-    hard: { provider, llmTimeoutMs },
-    extreme: { provider, llmTimeoutMs },
-  } as const satisfies Record<BotLevel, { provider: LLMProvider; llmTimeoutMs: number }>;
+    easy: { provider, llmTimeoutMs, memoryFraction: 1 },
+    medium: { provider, llmTimeoutMs, memoryFraction: 1 },
+    hard: { provider, llmTimeoutMs, memoryFraction: 1 },
+    extreme: { provider, llmTimeoutMs, memoryFraction: 1 },
+  } as const satisfies Record<
+    BotLevel,
+    { provider: LLMProvider; llmTimeoutMs: number; memoryFraction: number }
+  >;
 }
 
 interface Node {
@@ -46,7 +49,10 @@ interface Node {
 }
 
 /** Builds `count` nodes wired to one shared bus, registry, and durable store. */
-async function cluster(count: number): Promise<{ nodes: Node[]; repository: InMemoryMatchRepository }> {
+async function cluster(
+  count: number,
+  opts: { noHumanTimeoutMs?: number } = {},
+): Promise<{ nodes: Node[]; repository: InMemoryMatchRepository }> {
   const plugins = await PluginManager.loadAll(gamesRoot, new InMemoryPluginRepository());
   const repository = new InMemoryMatchRepository();
   const backplane = new LocalBusBackplane();
@@ -61,6 +67,7 @@ async function cluster(count: number): Promise<{ nodes: Node[]; repository: InMe
       persistence: new AsyncPersistenceWriter(repository),
       aiMoveMinDelayMs: 0,
       roundIntermissionMs: 0,
+      noHumanTimeoutMs: opts.noHumanTimeoutMs,
     });
     const gateway = new MatchGateway({
       manager,
@@ -218,24 +225,29 @@ describe('MatchGateway presence across nodes', () => {
     const { nodes } = await cluster(2);
     const [owner, other] = nodes as [Node, Node];
 
+    // Seat 1 leads the bidding, so put the player who is about to vanish there
+    // and a second player behind them — the AI has to cross seat 1 to reach
+    // the seat that is still occupied.
     const matchId = await owner.gateway.createRoom('callbreak', HOST);
-    await other.gateway.join({ matchId, seat: 0, userId: HOST, displayName: 'Host', token: 'c-host' });
+    await other.gateway.join({ matchId, seat: 1, userId: HOST, displayName: 'Host', token: 'c-host' });
+    await owner.gateway.join({ matchId, seat: 0, userId: FRIEND, displayName: 'Friend', token: 'c-friend' });
     await owner.gateway.startMatch(matchId, HOST, [
-      { seat: 0, userId: HOST, token: 'c-host', nodeId: other.gateway.nodeId },
+      { seat: 1, userId: HOST, token: 'c-host', nodeId: other.gateway.nodeId },
+      { seat: 0, userId: FRIEND, token: 'c-friend', nodeId: owner.gateway.nodeId },
     ]);
     await tick();
-    expect((await owner.gateway.getMaskedState(matchId, 0)).turnSeat).toBe(0);
+    expect((await owner.gateway.getMaskedState(matchId, 1)).turnSeat).toBe(1);
 
     await other.gateway.reportDisconnect(matchId, HOST, 'c-host');
     await tick();
 
-    // With nobody holding seat 0 any more, play carried on without it.
-    const after = await owner.gateway.getMaskedState(matchId, 0);
-    expect(after.handNumber).toBeGreaterThanOrEqual(1);
+    // Friend is still at the table, so play carried on through seat 1 rather
+    // than stalling on a player who is no longer there.
+    expect((await owner.gateway.getMaskedState(matchId, 0)).turnSeat).toBe(0);
   });
 
   it('forgets connections from a node that has gone silent, so a crashed node cannot pin a seat', async () => {
-    const { nodes } = await cluster(2);
+    const { nodes, repository } = await cluster(2, { noHumanTimeoutMs: 30 });
     const [owner, other] = nodes as [Node, Node];
 
     const matchId = await owner.gateway.createRoom('callbreak', HOST);
@@ -245,14 +257,42 @@ describe('MatchGateway presence across nodes', () => {
     ]);
     await tick();
     expect((await owner.gateway.getMaskedState(matchId, 0)).turnSeat).toBe(0);
+    expect(await repository.load(matchId)).not.toBeNull();
 
     // Node "other" dies: it stops syncing presence, and never sends a close.
     await owner.manager.evictStaleNodes(matchId, 0);
     await tick();
 
-    // With nothing left holding seat 0, the AI took it over and played the
-    // match out instead of the table waiting forever on a node that is gone.
-    expect(owner.manager.isFinished(matchId)).toBe(true);
+    // That was the only player, so the table is empty rather than pinned to a
+    // node that no longer exists — and once the reconnect window lapses the
+    // match is terminated outright, snapshot and all.
+    await sleep(60);
+    await tick();
+    expect(await repository.load(matchId)).toBeNull();
+    await expect(owner.gateway.getMaskedState(matchId, 0)).rejects.toThrow(MatchNotFoundError);
+  });
+
+  it('leaves a terminated match unrecoverable, so nothing restarts a table everyone left', async () => {
+    const { nodes, repository } = await cluster(2, { noHumanTimeoutMs: 30 });
+    const [owner, other] = nodes as [Node, Node];
+
+    const matchId = await owner.gateway.createRoom('callbreak', HOST);
+    await owner.gateway.join({ matchId, seat: 0, userId: HOST, displayName: 'Host', token: 'c-host' });
+    await owner.gateway.startMatch(matchId, HOST, [
+      { seat: 0, userId: HOST, token: 'c-host', nodeId: owner.gateway.nodeId },
+    ]);
+    await tick();
+
+    await owner.gateway.reportDisconnect(matchId, HOST, 'c-host');
+    await sleep(60);
+    await tick();
+
+    // The other node cannot recover it either: with the snapshot gone there is
+    // nothing to rebuild the match from.
+    expect(await repository.load(matchId)).toBeNull();
+    await expect(
+      other.gateway.join({ matchId, seat: 0, userId: HOST, displayName: 'Host', token: 'c-host-2' }),
+    ).rejects.toThrow(MatchNotFoundError);
   });
 });
 
@@ -311,4 +351,8 @@ describe('MatchGateway failover', () => {
 
 function tick(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 20));
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
