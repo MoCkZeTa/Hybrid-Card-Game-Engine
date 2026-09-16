@@ -55,6 +55,7 @@ export interface PlayersConfig {
  *                 kitty. This is what lets one plugin serve 3, 4, 5 or 6
  *                 players from the same 52-card deck (Callbreak).
  */
+
 export type DealConfig =
   | {
       readonly mode: 'schedule';

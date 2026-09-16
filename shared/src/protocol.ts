@@ -94,6 +94,21 @@ export interface PingMessage {
   readonly nonce: number;
 }
 
+/**
+ * Sent when the player intentionally leaves a match they are watching or
+ * seated in. Unlike closing the socket (which also triggers disconnect
+ * logic), this lets the client stay connected, go back to the lobby, and
+ * start or browse other matches without dropping the WebSocket.
+ *
+ * The server responds by: unwatching the fan-out, clearing the connection's
+ * `matchId`, and reporting a disconnect to the match so the abandoned-match
+ * countdown can start if the table is now empty.
+ */
+export interface LeaveMatchMessage {
+  readonly type: 'LEAVE_MATCH';
+  readonly matchId: string;
+}
+
 export type ClientMessage =
   | AuthenticateMessage
   | ListGamesMessage
@@ -102,7 +117,8 @@ export type ClientMessage =
   | CreateMatchMessage
   | StartMatchMessage
   | SubmitMoveMessage
-  | PingMessage;
+  | PingMessage
+  | LeaveMatchMessage;
 
 // ---- Server -> Client -------------------------------------------------------
 

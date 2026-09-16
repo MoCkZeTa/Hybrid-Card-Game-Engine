@@ -103,6 +103,24 @@ export interface TrickCard {
   readonly card: CardId;
 }
 
+/**
+ * A trick that has finished, retained for the rest of the hand.
+ *
+ * This is the raw fact that `PlayerState.tricksWon` and `GameState.handPoints`
+ * are summaries of. Without it those summaries are the only surviving record,
+ * so a decision-maker can see *how many* tricks a seat won but never *which
+ * cards* have already left the deck — which is exactly what card counting
+ * needs, and what both shipped `strategy.md` files ask the AI to do.
+ *
+ * Carries no hidden information: every card in it was played face up in front
+ * of the whole table, so it crosses the fog-of-war boundary unmasked.
+ */
+export interface CompletedTrick {
+  readonly cards: readonly TrickCard[];
+  readonly winnerSeat: SeatIndex;
+  readonly leadSuit: Suit;
+}
+
 export interface GameState {
   readonly gameId: string;
   readonly matchId: string;
@@ -125,6 +143,13 @@ export interface GameState {
   readonly currentTrick: readonly TrickCard[];
   /** The most recently completed trick (all seats' cards), kept around purely so a client can display it briefly after `currentTrick` clears back to empty. Null until the first trick resolves. */
   readonly lastTrick: readonly TrickCard[] | null;
+  /**
+   * Every trick finished this hand, oldest first; reset on every deal.
+   * `lastTrick` is this array's final entry, kept as its own field because the
+   * client's trick animation reads it on every state push and shouldn't have
+   * to index into a growing array to find it.
+   */
+  readonly completedTricks: readonly CompletedTrick[];
   readonly leadSuit: Suit | null;
   readonly kitty: readonly CardId[];
   /** Persistent match score per team key, carried across hands. */
@@ -193,6 +218,17 @@ export interface MaskedGameState {
   readonly players: readonly MaskedPlayerState[];
   readonly currentTrick: readonly TrickCard[];
   readonly lastTrick: readonly TrickCard[] | null;
+  /**
+   * The hand's completed tricks in full, oldest first. Passed through the mask
+   * unaltered — these cards were all played face up, so withholding them would
+   * hide public information rather than protect private information.
+   *
+   * A *bot* may be shown less than this: `compilePrompt` trims the history by
+   * the bot's difficulty level. That trimming is a capability limit on one AI
+   * seat, not an entitlement limit on the viewer, so it belongs downstream of
+   * the mask — never here, where it would also blind the human client.
+   */
+  readonly completedTricks: readonly CompletedTrick[];
   readonly leadSuit: Suit | null;
   /** Kitty contents are never visible to anyone once dealt, unless the game reveals them at scoring. */
   readonly kittyCount: number;
