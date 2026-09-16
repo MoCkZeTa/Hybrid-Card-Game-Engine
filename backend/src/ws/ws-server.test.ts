@@ -37,11 +37,14 @@ class AlwaysFirstMoveProvider implements LLMProvider {
 
 function allTiers(provider: LLMProvider, llmTimeoutMs = 1000) {
   return {
-    easy: { provider, llmTimeoutMs },
-    medium: { provider, llmTimeoutMs },
-    hard: { provider, llmTimeoutMs },
-    extreme: { provider, llmTimeoutMs },
-  } as const satisfies Record<BotLevel, { provider: LLMProvider; llmTimeoutMs: number }>;
+    easy: { provider, llmTimeoutMs, memoryFraction: 1 },
+    medium: { provider, llmTimeoutMs, memoryFraction: 1 },
+    hard: { provider, llmTimeoutMs, memoryFraction: 1 },
+    extreme: { provider, llmTimeoutMs, memoryFraction: 1 },
+  } as const satisfies Record<
+    BotLevel,
+    { provider: LLMProvider; llmTimeoutMs: number; memoryFraction: number }
+  >;
 }
 
 interface Harness {

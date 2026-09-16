@@ -23,7 +23,14 @@ import { MongoClient } from 'mongodb';
 import { PluginManager } from './core/plugin/plugin-manager.js';
 import { InMemoryPluginRepository, type PluginRepository } from './core/plugin/plugin-repository.js';
 import { MongoPluginRepository } from './core/plugin/mongo-plugin-repository.js';
-import { createBotTiersFromEnv } from './core/ai/provider-router.js';
+import { createBotTiersFromEnv, createDesignerProviderFromEnv } from './core/ai/provider-router.js';
+import { GameDesigner } from './core/authoring/game-designer.js';
+import { DesignService } from './core/authoring/design-service.js';
+import {
+  InMemoryDesignSessionRepository,
+  type DesignSessionRepository,
+} from './core/authoring/design-session-repository.js';
+import { MongoDesignSessionRepository } from './core/authoring/mongo-design-session-repository.js';
 import { InMemoryMatchRepository, type MatchRepository } from './core/persistence/match-repository.js';
 import { MongoMatchRepository } from './core/persistence/mongo-match-repository.js';
 import { AsyncPersistenceWriter } from './core/persistence/persist-writer.js';
@@ -33,8 +40,12 @@ import { AuthService } from './core/auth/auth-service.js';
 import { InMemoryUserRepository, type UserRepository } from './core/auth/user-repository.js';
 import { MongoUserRepository } from './core/auth/mongo-user-repository.js';
 import { InMemorySessionCache, RedisSessionCache, type SessionCache } from './core/auth/session-cache.js';
+import { createEmailSenderFromEnv } from './core/auth/email-sender.js';
 import { createAuthHandler } from './http/auth-routes.js';
+import { createStaticHandler } from './http/static-files.js';
+import { assertEnvUsable } from './config/env.js';
 import { createPluginHandler } from './http/plugin-routes.js';
+import { createDesignHandler } from './http/design-routes.js';
 import { createRedisBundle, redisConfigFromEnv, type RedisBundle } from './core/redis/redis-client.js';
 import { LocalEventBus, RedisEventBus, type EventBus } from './core/cluster/event-bus.js';
 import {
@@ -43,6 +54,11 @@ import {
   type OwnershipRegistry,
 } from './core/cluster/ownership-registry.js';
 import { MatchGateway } from './core/cluster/match-gateway.js';
+import {
+  LocalConnectionRegistry,
+  RedisConnectionRegistry,
+  type ConnectionRegistry,
+} from './core/cluster/connection-registry.js';
 import { InMemoryRateLimiter, RedisRateLimiter, type RateLimiter } from './core/ratelimit/rate-limiter.js';
 import { WsServer } from './ws/ws-server.js';
 import { parseAllowedOrigins } from './ws/origin.js';
@@ -56,8 +72,15 @@ const gamesRoot = path.join(path.dirname(fileURLToPath(import.meta.url)), 'games
 const PORT = Number(process.env.PORT ?? 3001);
 const CORS_ORIGIN = process.env.CORS_ORIGIN ?? 'http://localhost:5173';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
+const APP_BASE_URL = process.env.APP_BASE_URL ?? CORS_ORIGIN;
 
 async function main(): Promise<void> {
+  // Before anything opens a socket or a connection pool: every optional
+  // dependency in this server degrades quietly by design, which is right in
+  // development and indistinguishable from working in production. This throws
+  // instead of booting when a production process is configured to degrade.
+  assertEnvUsable(process.env);
+
   const { tiers: botTiers, defaultLevel: defaultBotLevel } = createBotTiersFromEnv(process.env);
   // `createBotTiersFromEnv` always populates every `BotLevel` — `!` because
   // `Record` indexing is widened to `| undefined` under `noUncheckedIndexedAccess`.
@@ -98,11 +121,15 @@ async function main(): Promise<void> {
   const registry: OwnershipRegistry = redis ? new RedisOwnershipRegistry(redis) : new LocalOwnershipRegistry();
   const rateLimiter: RateLimiter = redis ? new RedisRateLimiter(redis) : new InMemoryRateLimiter();
   const sessionCache: SessionCache = redis ? new RedisSessionCache(redis) : new InMemorySessionCache();
+  const connectionRegistry: ConnectionRegistry = redis
+    ? new RedisConnectionRegistry(redis)
+    : new LocalConnectionRegistry();
 
   // --- Storage -------------------------------------------------------------
   let matchRepository: MatchRepository;
   let userRepository: UserRepository;
   let pluginRepository: PluginRepository;
+  let designSessionRepository: DesignSessionRepository;
   let mongoClient: MongoClient | null = null;
 
   if (process.env.MONGODB_URI) {
@@ -113,7 +140,8 @@ async function main(): Promise<void> {
       matchRepository = await MongoMatchRepository.fromDb(db);
       userRepository = await MongoUserRepository.create(db);
       pluginRepository = await MongoPluginRepository.fromDb(db);
-      console.log('Connected to MongoDB — matches, accounts, and imported plugins are durable');
+      designSessionRepository = await MongoDesignSessionRepository.fromDb(db);
+      console.log('Connected to MongoDB — matches, accounts, imported plugins, and game designs are durable');
     } catch (err) {
       const detail = (err instanceof Error ? err.message.split('\n')[0] : String(err)) ?? 'unknown error';
       if (IS_PRODUCTION) {
@@ -138,6 +166,7 @@ async function main(): Promise<void> {
       matchRepository = new InMemoryMatchRepository();
       userRepository = new InMemoryUserRepository();
       pluginRepository = new InMemoryPluginRepository();
+      designSessionRepository = new InMemoryDesignSessionRepository();
     }
   } else {
     if (IS_PRODUCTION) throw new Error('MONGODB_URI is required when NODE_ENV=production');
@@ -145,9 +174,15 @@ async function main(): Promise<void> {
     matchRepository = new InMemoryMatchRepository();
     userRepository = new InMemoryUserRepository();
     pluginRepository = new InMemoryPluginRepository();
+    designSessionRepository = new InMemoryDesignSessionRepository();
   }
 
-  const authService = new AuthService(userRepository, sessionCache);
+  const emailSender = createEmailSenderFromEnv(process.env);
+  const authService = new AuthService(userRepository, sessionCache, {
+    emailSender,
+    appBaseUrl: APP_BASE_URL,
+  });
+  console.log(`Email sender: ${emailSender.name} (reset links point at ${APP_BASE_URL})`);
   const persistence = new AsyncPersistenceWriter(matchRepository);
 
   const plugins = await PluginManager.loadAll(gamesRoot, pluginRepository);
@@ -177,12 +212,50 @@ async function main(): Promise<void> {
   await gateway.start();
   console.log(`Node id: ${gateway.nodeId}`);
 
+  // --- AI game designer (optional) -----------------------------------------
+  // The one feature here with no degraded mode: drafting a rules.json needs a
+  // generative call, and there is no `legal_moves[0]` to fall back on. With no
+  // key the routes still mount and report *why* they are unavailable, so the
+  // client hides the feature instead of offering a button that always fails.
+  const designerProvider = createDesignerProviderFromEnv(process.env);
+  const designService = designerProvider.available
+    ? new DesignService(
+        new GameDesigner(designerProvider.provider, {
+          ...(process.env.DESIGNER_TIMEOUT_MS ? { timeoutMs: Number(process.env.DESIGNER_TIMEOUT_MS) } : {}),
+          ...(process.env.DESIGNER_MAX_TOKENS ? { maxTokens: Number(process.env.DESIGNER_MAX_TOKENS) } : {}),
+        }),
+        designSessionRepository,
+        plugins,
+      )
+    : null;
+  if (designService) {
+    console.log(`AI game designer: enabled (${designService.modelLabel})`);
+  } else if (!designerProvider.available) {
+    console.log(`AI game designer: disabled — ${designerProvider.reason}`);
+  }
+
   // --- HTTP + WebSocket on one port ----------------------------------------
   const handleAuth = createAuthHandler(authService, CORS_ORIGIN, IS_PRODUCTION, rateLimiter);
   const handlePlugins = createPluginHandler(plugins, authService, CORS_ORIGIN, IS_PRODUCTION);
+  const handleDesign = createDesignHandler({
+    service: designService,
+    ...(designerProvider.available ? {} : { unavailableReason: designerProvider.reason }),
+    authService,
+    allowedOrigin: CORS_ORIGIN,
+    isProduction: IS_PRODUCTION,
+    rateLimiter,
+  });
 
   /** Flipped false at the first shutdown signal so a load balancer drains us before we stop. */
   let ready = true;
+
+  // Optional single-container mode: serve the built client from this process
+  // too, so there is one origin, one deploy, and no CORS to configure.
+  const staticRoot =
+    process.env.FRONTEND_DIST ??
+    path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'frontend', 'dist');
+  const handleStatic = process.env.SERVE_STATIC === 'true' ? createStaticHandler({ root: staticRoot }) : null;
+  if (handleStatic) console.log(`Serving built frontend from ${staticRoot}`);
 
   const httpServer = createServer((req, res) => {
     const url = req.url ?? '';
@@ -198,23 +271,34 @@ async function main(): Promise<void> {
     // draining, which is the signal a load balancer needs to stop routing new
     // connections while existing ones finish.
     if (url === '/ready') {
-      res.writeHead(ready ? 200 : 503, { 'Content-Type': 'application/json' });
+      // Redis health is read live rather than reported from the boot-time
+      // outcome. A node whose Redis died can no longer see the rest of the
+      // cluster's matches, and a probe that keeps answering 200 because the
+      // *connect* succeeded hours ago is how a balancer keeps feeding it
+      // traffic.
+      const redisHealth = redis?.health() ?? null;
+      const degraded = redisHealth !== null && !redisHealth.healthy;
+      res.writeHead(ready && !degraded ? 200 : 503, { 'Content-Type': 'application/json' });
       res.end(
         JSON.stringify({
-          ready,
+          ready: ready && !degraded,
+          draining: !ready,
           nodeId: gateway.nodeId,
           connections: wsServer.connectionCount,
-          redis: redis !== null,
+          redis: redisHealth ? { configured: true, ...redisHealth } : { configured: false },
           mongo: mongoClient !== null,
         }),
       );
       return;
     }
 
-    // Plugin routes first — the auth handler claims all of /api/* and would
-    // otherwise 404 them.
+    // Plugin and design routes first — the auth handler claims all of /api/*
+    // and would otherwise 404 them. Static files last, so a route never
+    // shadows the API.
     void handlePlugins(req, res)
+      .then((handled) => (handled ? true : handleDesign(req, res)))
       .then((handled) => (handled ? true : handleAuth(req, res)))
+      .then((handled) => (handled || !handleStatic ? handled : handleStatic(req, res)))
       .then((handled) => {
         if (!handled) {
           res.writeHead(404, { 'Content-Type': 'text/plain' });
@@ -244,6 +328,7 @@ async function main(): Promise<void> {
       isProduction: IS_PRODUCTION,
     },
     listGames: (userId) => plugins.summaries(userId),
+    connectionRegistry,
     ...(aiLogging ? { onMatchStart: logMatchStart } : {}),
     ...(process.env.WS_HEARTBEAT_MS ? { heartbeatIntervalMs: Number(process.env.WS_HEARTBEAT_MS) } : {}),
     ...(process.env.WS_MAX_CONNECTIONS ? { maxConnections: Number(process.env.WS_MAX_CONNECTIONS) } : {}),
@@ -253,6 +338,7 @@ async function main(): Promise<void> {
   httpServer.listen(PORT, () => {
     console.log(`HTTP  auth API   : http://localhost:${PORT}/api/auth`);
     console.log(`HTTP  plugin API : http://localhost:${PORT}/api/plugins`);
+    console.log(`HTTP  design API : http://localhost:${PORT}/api/design`);
     console.log(`HTTP  probes     : http://localhost:${PORT}/health, /ready`);
     console.log(`WS    game server: ws://localhost:${PORT}`);
     console.log(`CORS  allowed from: ${CORS_ORIGIN}`);
@@ -274,6 +360,14 @@ async function main(): Promise<void> {
       { name: 'match ownership', run: () => gateway.close() },
       { name: 'http server', run: () => new Promise<void>((resolve) => httpServer.close(() => resolve())) },
       { name: 'event bus', run: () => bus.close() },
+      {
+        name: 'rate limiter',
+        run: async () => {
+          // Both implementations own an interval; the Redis one owns its
+          // fallback's. Unref'd, so this is tidiness rather than a leak.
+          (rateLimiter as { stop?: () => void }).stop?.();
+        },
+      },
       { name: 'redis', run: async () => redis?.close() },
       { name: 'mongo', run: async () => mongoClient?.close() },
     ],

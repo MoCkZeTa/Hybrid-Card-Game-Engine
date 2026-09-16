@@ -45,6 +45,7 @@ import type { MatchGateway, Fanout } from '../core/cluster/match-gateway.js';
 import { MatchNotFoundError, MatchUnavailableError, NotHostError, SeatTakenError } from '../core/errors.js';
 import type { AuthService } from '../core/auth/auth-service.js';
 import type { RateLimiter } from '../core/ratelimit/rate-limiter.js';
+import { LocalConnectionRegistry, type ConnectionRegistry } from '../core/cluster/connection-registry.js';
 import { WS_CREATE_RULE, WS_MESSAGE_RULE } from '../core/ratelimit/rate-limiter.js';
 import { isOriginAllowed, type OriginPolicy } from './origin.js';
 
@@ -71,6 +72,12 @@ export interface WsServerOptions {
   readonly authTimeoutMs?: number;
   readonly maxConnections?: number;
   readonly maxConnectionsPerUser?: number;
+  /**
+   * Counts a user's sockets across every node. Defaults to a local registry,
+   * which is exact while there is one node and an undercount the moment there
+   * are more — see `core/cluster/connection-registry.ts`.
+   */
+  readonly connectionRegistry?: ConnectionRegistry;
 }
 
 interface Connection {
@@ -97,6 +104,13 @@ export class WsServer {
   private readonly authTimeoutMs: number;
   private readonly maxConnections: number;
   private readonly maxConnectionsPerUser: number;
+  private readonly connectionRegistry: ConnectionRegistry;
+  /**
+   * How long a registry entry survives without a heartbeat. Three intervals,
+   * so a single missed sweep (or a slow one) never drops a live connection out
+   * of the count and lets the cap be exceeded.
+   */
+  private readonly connectionLeaseMs: number;
   private heartbeat: NodeJS.Timeout | null = null;
   private closing = false;
 
@@ -106,6 +120,8 @@ export class WsServer {
     this.authTimeoutMs = opts.authTimeoutMs ?? 10_000;
     this.maxConnections = opts.maxConnections ?? 10_000;
     this.maxConnectionsPerUser = opts.maxConnectionsPerUser ?? 8;
+    this.connectionRegistry = opts.connectionRegistry ?? new LocalConnectionRegistry();
+    this.connectionLeaseMs = this.heartbeatIntervalMs * 3;
 
     this.wss = new WebSocketServer({
       noServer: true,
@@ -209,6 +225,9 @@ export class WsServer {
       const peers = this.byUser.get(conn.user.id);
       peers?.delete(conn);
       if (peers?.size === 0) this.byUser.delete(conn.user.id);
+      // Give the slot back now rather than letting the lease run out, so a
+      // player who closes a tab and reopens it is not briefly at their cap.
+      void this.connectionRegistry.release(conn.user.id, conn.id).catch(() => undefined);
     }
 
     if (conn.matchId && conn.user) {
@@ -248,6 +267,14 @@ export class WsServer {
         console.warn(`[ws] connection ${conn.id} is ${conn.ws.bufferedAmount} bytes behind — dropping`);
         this.closeConnection(conn, WS_CLOSE.POLICY_VIOLATION, 'Client too far behind');
         continue;
+      }
+
+      // The heartbeat doubles as the registry lease renewal: one sweep keeps
+      // both the socket and its cluster-wide entry alive.
+      if (conn.user) {
+        void this.connectionRegistry
+          .register(conn.user.id, conn.id, this.connectionLeaseMs)
+          .catch(() => undefined);
       }
 
       conn.alive = false;
@@ -369,6 +396,9 @@ export class WsServer {
 
       case 'SUBMIT_MOVE':
         return this.handleMove(conn, message.matchId, message.seat as SeatIndex, message.moveId);
+
+      case 'LEAVE_MATCH':
+        return this.handleLeave(conn, message.matchId);
     }
   }
 
@@ -396,14 +426,40 @@ export class WsServer {
     }
     peers.add(conn);
 
-    // One user opening tabs without bound is usually a reconnect loop. Evict
-    // the oldest rather than refusing the newest — the newest is the one the
-    // person is actually looking at.
-    while (peers.size > this.maxConnectionsPerUser) {
-      const oldest = peers.values().next().value as Connection | undefined;
-      if (!oldest || oldest === conn) break;
-      peers.delete(oldest);
-      this.closeConnection(oldest, WS_CLOSE.POLICY_VIOLATION, 'Too many connections for this account');
+    // One user opening tabs without bound is usually a reconnect loop. The
+    // count comes from the registry rather than `peers.size`, because on a
+    // multi-node deployment this node holds only a fraction of the user's
+    // sockets and its own map would report a cap several times larger than the
+    // configured one.
+    const total = await this.connectionRegistry
+      .register(user.id, conn.id, this.connectionLeaseMs)
+      .catch(() => peers.size);
+
+    if (total > this.maxConnectionsPerUser) {
+      // Evict the oldest rather than refusing the newest — the newest is the
+      // one the person is actually looking at.
+      let excess = total - this.maxConnectionsPerUser;
+      for (const peer of [...peers]) {
+        if (excess <= 0) break;
+        if (peer === conn) continue;
+        peers.delete(peer);
+        void this.connectionRegistry.release(user.id, peer.id).catch(() => undefined);
+        this.closeConnection(peer, WS_CLOSE.POLICY_VIOLATION, 'Too many connections for this account');
+        excess--;
+      }
+
+      // Still over: every remaining socket belongs to another node, and this
+      // one cannot close them. Refusing the newest is the wrong end to give up
+      // — but the alternative is a bus round trip asking a peer node to drop a
+      // connection, and the cap exists to contain a runaway reconnect loop,
+      // which this stops just as well.
+      if (excess > 0) {
+        void this.connectionRegistry.release(user.id, conn.id).catch(() => undefined);
+        peers.delete(conn);
+        this.sendError(conn, 'RATE_LIMITED', 'Too many open connections for this account');
+        this.closeConnection(conn, WS_CLOSE.POLICY_VIOLATION, 'Too many connections for this account');
+        return;
+      }
     }
 
     this.send(conn, { type: 'AUTHENTICATED', userId: user.id, displayName: user.displayName });
@@ -434,6 +490,10 @@ export class WsServer {
     try {
       const room = await this.opts.gateway.enterRoom(matchId);
       await this.watch(conn, matchId);
+      // Watchers count as present too. A match is only "empty" — and so only
+      // terminated — when nobody at all is looking at it, which includes the
+      // host who started an all-AI table and never sat down.
+      this.opts.gateway.trackPresence(matchId, { userId: conn.user!.id, token: conn.id });
       this.send(conn, { type: 'ROOM_UPDATE', room });
     } catch (err) {
       this.reportError(conn, err);
@@ -490,6 +550,11 @@ export class WsServer {
       );
 
       await this.opts.gateway.startMatch(matchId, conn.user!.id, connectedSeats, botLevel);
+      // Seatless watchers (the host of an all-AI table, most often) are not in
+      // `connectedSeats`, so tell the owner about them now rather than a
+      // presence tick later — the turn loop will not run while it believes
+      // the table is empty.
+      await this.opts.gateway.syncPresenceNow(matchId);
     } catch (err) {
       this.reportError(conn, err);
     }
@@ -500,6 +565,28 @@ export class WsServer {
       await this.opts.gateway.submitMove(matchId, seat, moveId, conn.user!.id);
     } catch (err) {
       this.reportError(conn, err);
+    }
+  }
+
+  /**
+   * Explicit leave — the player navigated away from a match without closing
+   * the socket. Same three things `teardown` does on socket close:
+   *  1. Unsubscribe from match fan-out.
+   *  2. Clear `matchId` and `seat` on the connection object.
+   *  3. Report the disconnect so the gateway can start the abandoned-match
+   *     countdown if the table is now empty.
+   *
+   * Silently ignored if the connection is not currently watching `matchId`
+   * (duplicate leaves, or a leave that races a reconnect, are safe).
+   */
+  private handleLeave(conn: Connection, matchId: string): void {
+    if (conn.matchId !== matchId) return; // stale or duplicate — ignore
+    conn.unwatch?.();
+    conn.unwatch = null;
+    conn.matchId = null;
+    conn.seat = null;
+    if (conn.user) {
+      void this.opts.gateway.reportDisconnect(matchId, conn.user.id, conn.id);
     }
   }
 

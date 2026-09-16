@@ -1,18 +1,27 @@
 /**
  * Minimal HTTP surface for auth, built on `node:http` — the WebSocket server
  * already needs an http server to attach to, so reusing it avoids pulling in
- * Express for three endpoints.
+ * Express for a handful of endpoints.
  *
- *   POST /api/auth/register  { email, password, displayName } -> AuthSuccess
- *   POST /api/auth/login     { email, password }              -> AuthSuccess
- *   POST /api/auth/logout    (Bearer token)                   -> { ok: true }
- *   GET  /api/auth/me        (Bearer token)                   -> AuthUser
+ *   POST /api/auth/register         { email, password, displayName } -> AuthSuccess
+ *   POST /api/auth/login            { email, password }              -> AuthSuccess
+ *   POST /api/auth/logout           (Bearer)                         -> { ok: true }
+ *   POST /api/auth/logout-all       (Bearer) { keepCurrent? }        -> { ok: true }
+ *   GET  /api/auth/me               (Bearer)                         -> AuthUser
+ *   GET  /api/auth/sessions         (Bearer)                         -> { count }
+ *   POST /api/auth/change-password  (Bearer) { currentPassword, newPassword } -> { ok: true }
+ *   POST /api/auth/forgot-password  { email }                        -> { ok: true }
+ *   POST /api/auth/reset-password   { token, password }              -> AuthSuccess
+ *
+ * Note what `forgot-password` returns: `{ ok: true }`, always, even for an
+ * address with no account. Anything else turns the endpoint into a checker for
+ * which emails are registered.
  */
 
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { AuthError, type AuthService } from '../core/auth/auth-service.js';
 import { resolveCorsOrigin } from './cors.js';
-import { AUTH_RULE, type RateLimiter } from '../core/ratelimit/rate-limiter.js';
+import { AUTH_RULE, PASSWORD_RESET_RULE, type RateLimiter } from '../core/ratelimit/rate-limiter.js';
 import { clientIp } from '../ws/ws-server.js';
 
 const MAX_BODY_BYTES = 8 * 1024;
@@ -21,7 +30,7 @@ export function createAuthHandler(
   authService: AuthService,
   allowedOrigin: string,
   isProduction: boolean,
-  /** Throttles register/login per IP. Password guessing is the whole reason this exists. */
+  /** Throttles credential and email-sending endpoints per IP. */
   rateLimiter: RateLimiter,
 ) {
   return async function handle(req: IncomingMessage, res: ServerResponse): Promise<boolean> {
@@ -34,14 +43,30 @@ export function createAuthHandler(
       return true;
     }
 
-    // Only the credential-checking endpoints are throttled. `/me` and `/logout`
-    // present a token the caller already holds, so rate limiting them would
-    // only punish a client reconnecting after a network blip.
+    const ip = clientIp(req);
+    const loginBudgetKey = `auth:${ip}`;
+
+    // Only the endpoints an anonymous caller can hammer are throttled. `/me`,
+    // `/logout`, and `/change-password` all present a token the caller already
+    // holds, so rate limiting them would only punish a client reconnecting
+    // after a network blip.
     if ((url === '/api/auth/login' || url === '/api/auth/register') && req.method === 'POST') {
-      const budget = await rateLimiter.consume(`auth:${clientIp(req)}`, AUTH_RULE);
+      const budget = await rateLimiter.consume(loginBudgetKey, AUTH_RULE);
       if (!budget.allowed) {
         res.setHeader('Retry-After', String(Math.ceil(budget.retryAfterMs / 1000)));
         json(res, 429, { error: 'Too many attempts — please wait a moment and try again' });
+        return true;
+      }
+    }
+
+    // Reset requests get their own, much tighter budget: each one sends real
+    // email to a third party, so an unthrottled endpoint is a way to use this
+    // server to spam someone else's inbox.
+    if (url === '/api/auth/forgot-password' && req.method === 'POST') {
+      const budget = await rateLimiter.consume(`reset:${ip}`, PASSWORD_RESET_RULE);
+      if (!budget.allowed) {
+        res.setHeader('Retry-After', String(Math.ceil(budget.retryAfterMs / 1000)));
+        json(res, 429, { error: 'Too many reset requests — please wait a few minutes' });
         return true;
       }
     }
@@ -61,6 +86,11 @@ export function createAuthHandler(
       if (url === '/api/auth/login' && req.method === 'POST') {
         const body = await readJson(req);
         const result = await authService.login(String(body.email ?? ''), String(body.password ?? ''));
+        // Proving you own the account hands the budget back. An attacker gains
+        // nothing from this (they have no successful logins to spend), while a
+        // legitimate user who mistyped twice stops sharing a depleted bucket
+        // with everyone else behind the same NAT.
+        await rateLimiter.reset(loginBudgetKey);
         json(res, 200, result);
         return true;
       }
@@ -68,6 +98,14 @@ export function createAuthHandler(
       if (url === '/api/auth/logout' && req.method === 'POST') {
         const token = bearerToken(req);
         if (token) await authService.logout(token);
+        json(res, 200, { ok: true });
+        return true;
+      }
+
+      if (url === '/api/auth/logout-all' && req.method === 'POST') {
+        const token = requireBearer(req);
+        const body = await readJson(req);
+        await authService.logoutEverywhere(token, body.keepCurrent === true);
         json(res, 200, { ok: true });
         return true;
       }
@@ -80,6 +118,42 @@ export function createAuthHandler(
           return true;
         }
         json(res, 200, user);
+        return true;
+      }
+
+      if (url === '/api/auth/sessions' && req.method === 'GET') {
+        const token = requireBearer(req);
+        json(res, 200, { count: await authService.listSessionCount(token) });
+        return true;
+      }
+
+      if (url === '/api/auth/change-password' && req.method === 'POST') {
+        const token = requireBearer(req);
+        const body = await readJson(req);
+        await authService.changePassword(
+          token,
+          String(body.currentPassword ?? ''),
+          String(body.newPassword ?? ''),
+        );
+        json(res, 200, { ok: true });
+        return true;
+      }
+
+      if (url === '/api/auth/forgot-password' && req.method === 'POST') {
+        const body = await readJson(req);
+        await authService.requestPasswordReset(String(body.email ?? ''));
+        // Same answer for a real address and an unknown one, by design.
+        json(res, 200, { ok: true });
+        return true;
+      }
+
+      if (url === '/api/auth/reset-password' && req.method === 'POST') {
+        const body = await readJson(req);
+        const result = await authService.resetPassword(
+          String(body.token ?? ''),
+          String(body.password ?? ''),
+        );
+        json(res, 200, result);
         return true;
       }
 
@@ -113,6 +187,13 @@ function bearerToken(req: IncomingMessage): string | null {
   const header = req.headers.authorization;
   if (!header?.startsWith('Bearer ')) return null;
   return header.slice('Bearer '.length).trim() || null;
+}
+
+/** For endpoints where a missing token is a 401 rather than a no-op. */
+function requireBearer(req: IncomingMessage): string {
+  const token = bearerToken(req);
+  if (!token) throw new AuthError('Not authenticated', 401);
+  return token;
 }
 
 async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> {
